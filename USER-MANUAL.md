@@ -243,7 +243,9 @@ Failed: 1
 ```
   [████████████░░░░░░░░░░░░░░░░] 4/12 33%  k6: pr3-index.js  42s elapsed · ETA 86s
 ```
+
 As each test finishes a result row is printed and the progress bar advances:
+
 ```
   ✅ 🔥 k6    pr0-base-url-load.js                 62.3s
   ❌ 🎭 playwright  pr0-base-url-load.spec.ts       18.1s
@@ -686,7 +688,16 @@ Human-readable. Designed to be readable in any terminal, text editor, or copy-pa
 
   ⏱️  Total test time:  80.4s  (1.3 min)
 
-─── 🔥  k6 Load Tests  (1 scenario(s)) ─────────────────────────────────────────
+─── �  Per-Test Results ────────────────────────────────────────────────────────
+
+    #  Tool         Test                                           Duration   Status
+  ──────────────────────────────────────────────────────────────────────────────
+    1  k6           pr0-base-url-load.js                            62.3s   ✅ pass
+    2  playwright   playwright-results-20260530-195315.json         18.1s   ❌ fail
+  ──────────────────────────────────────────────────────────────────────────────
+       Total                                                        80.4s   1/2 pass
+
+─── �🔥  k6 Load Tests  (1 scenario(s)) ─────────────────────────────────────────
 
   ✅ pr0-base-url-load.js  [20260530-195404]
     test duration              62.3s
@@ -750,6 +761,12 @@ Machine-readable. Structured for programmatic consumption, CI comparisons, or AI
       "ruby":       { "scripts": 0, "pass": 0, "fail": 0 }
     }
   },
+  "test_results": [
+    { "tool": "k6",         "name": "pr0-base-url-load.js",                       "duration_s": 62.3, "status": "pass" },
+    { "tool": "playwright", "name": "playwright-results-20260530-195315.json",    "duration_s": 18.1, "status": "fail" },
+    { "tool": "cypress",    "name": "cypress-results-20260530-202516.json",       "duration_s": 34.7, "status": "pass" },
+    { "tool": "lighthouse", "name": "lhr-20260530-202800.json",                   "duration_s": 47.2, "status": "pass" }
+  ],
   "tools": {
     "k6": {
       "scenarios": [

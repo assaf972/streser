@@ -1530,6 +1530,20 @@ module Commands
 
   # ── report ──────────────────────────────────────────────────────────────────
   # Parses all tool output files → combined summary JSON + detailed TXT report.
+  #
+  # TXT sections (in order):
+  #   1. Header + meta (generated, target URL, overall status)
+  #   2. Overall Breakdown table — one row per tool with duration + totals
+  #   3. Per-Test Results table — one row per test/run/report with duration + status
+  #   4. Per-tool detail sections (k6 metrics, Playwright tests, Cypress, Lighthouse, Ruby)
+  #   5. Parse errors (if any)
+  #   6. Total test time footer
+  #
+  # JSON keys:
+  #   meta          — generated, slug, target_url, status, total_duration_s, duration_by_tool_s
+  #   totals        — overall_status, by_tool (per-tool pass/fail counts)
+  #   test_results  — flat array: [{tool, name, duration_s, status}, …]
+  #   tools         — raw parsed data for each tool (full detail)
   module Report
     WIDTH     = 80
     BAR_WIDTH = 30
@@ -1605,6 +1619,26 @@ module Commands
       }
       total_duration_s = tool_durations.values.sum.round(1)
 
+      # ── Build flat per-test result rows ─────────────────────────────────────
+      test_rows = []
+      parsed[:k6]["scenarios"].each do |s|
+        test_rows << { tool: "k6", name: s["name"], duration_s: s["run_duration_s"], status: s["status"] || "no_data" }
+      end
+      parsed[:playwright]["runs"].each do |r|
+        st = r["stats"]
+        test_rows << { tool: "playwright", name: r["file"], duration_s: st["duration_ms"] ? (st["duration_ms"] / 1000.0).round(1) : nil, status: st["failed"].to_i > 0 ? "fail" : "pass" }
+      end
+      parsed[:cypress]["runs"].each do |r|
+        st = r["stats"]
+        test_rows << { tool: "cypress", name: r["file"], duration_s: st["duration_ms"] ? (st["duration_ms"] / 1000.0).round(1) : nil, status: st["failed"].to_i > 0 ? "fail" : "pass" }
+      end
+      parsed[:lighthouse]["reports"].each do |rep|
+        test_rows << { tool: "lighthouse", name: rep["file"] || rep["url"], duration_s: rep["run_duration_s"], status: rep["status"] || "no_data" }
+      end
+      parsed[:ruby]["scripts"].each do |s|
+        test_rows << { tool: "ruby", name: s["name"], duration_s: nil, status: s["status"] || "no_data" }
+      end
+
       # ── Build summary JSON ─────────────────────────────────────────────────
       overall_status = parsed.values.any? { |p| (p.dig("totals", "status") || "no_data") == "fail" } ? "fail" : "pass"
 
@@ -1621,6 +1655,9 @@ module Commands
         "totals" => {
           "overall_status" => overall_status,
           "by_tool"        => parsed.transform_values { |p| p["totals"] },
+        },
+        "test_results" => test_rows.map { |r|
+          { "tool" => r[:tool], "name" => r[:name], "duration_s" => r[:duration_s], "status" => r[:status] }.compact
         },
         "tools" => parsed.transform_keys(&:to_s),
       }
@@ -1664,6 +1701,22 @@ module Commands
       lines << ""
       if total_duration_s > 0
         lines << "  #{ICONS[:timing]} Total test time:  #{total_duration_s}s  (#{(total_duration_s / 60.0).round(1)} min)"
+      end
+
+      # ── Per-test results table ───────────────────────────────────────────────
+      unless test_rows.empty?
+        lines << sec("📝  Per-Test Results")
+        lines << ""
+        lines << "  #{"#".rjust(3)}  #{"Tool".ljust(12)} #{"Test".ljust(44)} #{"Duration".rjust(10)}   Status"
+        lines << "  " + "─" * 78
+        test_rows.each_with_index do |row, i|
+          icon = row[:status] == "pass" ? ICONS[:pass] : (row[:status] == "fail" ? ICONS[:fail] : ICONS[:warn])
+          dur  = row[:duration_s] ? "#{row[:duration_s]}s" : "—"
+          lines << "  #{(i + 1).to_s.rjust(3)}  #{row[:tool].ljust(12)} #{row[:name].truncate(44).ljust(44)} #{dur.rjust(10)}   #{icon} #{row[:status]}"
+        end
+        t_pass = test_rows.count { |r| r[:status] == "pass" }
+        lines << "  " + "─" * 78
+        lines << "  #{" ".rjust(3)}  #{" ".ljust(12)} #{"Total".ljust(44)} #{total_duration_s > 0 ? "#{total_duration_s}s".rjust(10) : "—".rjust(10)}   #{t_pass}/#{test_rows.size} pass"
       end
 
       # ── k6 section ──────────────────────────────────────────────────────
