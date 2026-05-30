@@ -34,9 +34,11 @@ gemfile(false, quiet: !ENV["STRESTER_DEBUG"]) do
   gem "tty-table",   "~> 0.12"
   gem "tty-screen",  "~> 0.8"
   gem "pastel",      "~> 0.8"
+  gem "csv",         "~> 3.0"
 end
 
 require "json"
+require "csv"
 require "open3"
 require "fileutils"
 require "time"
@@ -1299,6 +1301,13 @@ module Parsers
           s.delete("custom_metrics") if s["custom_metrics"].empty?
           s.delete("run_duration_s") if s["run_duration_s"].nil?
         }
+
+        # Enrich scenario with per-request stats parsed from the CSV sibling
+        csv_path = f.sub(/-summary\.json$/, ".csv")
+        if (csv_data = parse_csv_file(csv_path))
+          result["scenarios"].last.merge!(csv_data)
+          result["files_parsed"] << File.basename(csv_path)
+        end
       end
 
       pass  = result["scenarios"].count { |s| s["status"] == "pass" }
@@ -1306,6 +1315,95 @@ module Parsers
       result["totals"] = { "scenarios" => result["scenarios"].size, "pass" => pass, "fail" => fail_,
                            "status" => fail_ > 0 ? "fail" : (pass > 0 ? "pass" : "no_data") }
       result
+    end
+
+    # Parse a k6 CSV output file and return per-request-name statistics.
+    # Returns nil when the file is absent or unreadable.
+    #
+    # Output shape:
+    #   "requests_breakdown" => [
+    #     { name, count, avg_ms, min_ms, p50_ms, p90_ms, p95_ms, p99_ms, max_ms,
+    #       error_count, error_rate_pct }, ...   ]   (sorted by name)
+    #   "custom_metrics_csv" => [
+    #     { name, count, avg_ms, p95_ms, max_ms }, ...   ]
+    def self.parse_csv_file(csv_path)
+      return nil unless File.exist?(csv_path)
+
+      dur_by_name  = Hash.new { |h, k| h[k] = [] }
+      req_by_name  = Hash.new(0)
+      fail_by_name = Hash.new(0)
+      custom_vals  = Hash.new { |h, k| h[k] = [] }
+
+      std_metrics = %w[
+        http_reqs http_req_duration http_req_blocked http_req_connecting
+        http_req_sending http_req_receiving http_req_tls_handshaking
+        http_req_waiting http_req_failed data_received data_sent
+        iteration_duration iterations vus vus_max checks
+      ]
+
+      CSV.foreach(csv_path, headers: true) do |row|
+        mname = row["metric_name"]&.strip
+        next unless mname
+        val  = row["metric_value"].to_f
+        name = row["name"].to_s.strip
+
+        case mname
+        when "http_req_duration"
+          next if name.empty?
+          dur_by_name[name] << val
+        when "http_reqs"
+          next if name.empty?
+          req_by_name[name] += 1
+          fail_by_name[name] += 1 if row["expected_response"].to_s.strip.downcase != "true"
+        else
+          next if std_metrics.include?(mname)
+          custom_vals[mname] << val if val > 0
+        end
+      end
+
+      pct = ->(sorted, p) {
+        n = sorted.size
+        n > 0 ? sorted[[(n * p / 100.0).ceil - 1, 0].max]&.round(2) : nil
+      }
+
+      breakdown = dur_by_name.map do |name, vals|
+        sorted = vals.sort
+        n      = sorted.size
+        errs   = fail_by_name[name]
+        total  = [req_by_name[name], n].max
+        {
+          "name"           => name,
+          "count"          => n,
+          "avg_ms"         => n > 0 ? (vals.sum / n).round(2) : nil,
+          "min_ms"         => sorted.first&.round(2),
+          "p50_ms"         => pct.call(sorted, 50),
+          "p90_ms"         => pct.call(sorted, 90),
+          "p95_ms"         => pct.call(sorted, 95),
+          "p99_ms"         => pct.call(sorted, 99),
+          "max_ms"         => sorted.last&.round(2),
+          "error_count"    => errs,
+          "error_rate_pct" => total > 0 ? (errs.to_f / total * 100).round(2) : 0.0,
+        }
+      end.sort_by { |r| r["name"] }
+
+      custom_csv = custom_vals.map do |mname, vals|
+        sorted = vals.sort
+        n      = sorted.size
+        {
+          "name"   => mname,
+          "count"  => n,
+          "avg_ms" => (vals.sum / n).round(2),
+          "p95_ms" => pct.call(sorted, 95),
+          "max_ms" => sorted.last&.round(2),
+        }
+      end
+
+      out = {}
+      out["requests_breakdown"] = breakdown unless breakdown.empty?
+      out["custom_metrics_csv"] = custom_csv unless custom_csv.empty?
+      out.empty? ? nil : out
+    rescue
+      nil   # never let a malformed CSV crash the report
     end
   end
 
@@ -1771,13 +1869,30 @@ module Commands
                        "avg=#{ms_str(vals["avg"])}  p95=#{ms_str(vals["p95"])}  max=#{ms_str(vals["max"])}"
             end
           end
-        end
 
-        # CSV row counts
-        Dir.glob(File.join(target_dir, "k6", "*.csv")).sort.each do |f|
-          count = (File.readlines(f).size - 1) rescue "?"
-          lines << ""
-          lines << "  #{ICONS[:log]} CSV: #{File.basename(f)}  (#{count} data rows)"
+          if (breakdown = s["requests_breakdown"]) && breakdown.any?
+            lines << ""
+            lines << "  Request Breakdown (from CSV):"
+            lines << "    #{"Request".ljust(26)} #{"n".rjust(6)} #{"avg".rjust(8)} #{"p90".rjust(8)} #{"p95".rjust(8)} #{"max".rjust(8)} #{"err%".rjust(7)}"
+            lines << "    " + "─" * 73
+            breakdown.each do |r|
+              err_str = r["error_rate_pct"].to_f > 0 ? "#{r["error_rate_pct"]}%" : "0%"
+              icon2   = r["error_rate_pct"].to_f == 0 ? ICONS[:pass] : ICONS[:fail]
+              lines << "    #{icon2} #{r["name"].truncate(24).ljust(24)} " \
+                       "#{r["count"].to_s.rjust(6)} #{ms_str(r["avg_ms"]).rjust(8)} " \
+                       "#{ms_str(r["p90_ms"]).rjust(8)} #{ms_str(r["p95_ms"]).rjust(8)} " \
+                       "#{ms_str(r["max_ms"]).rjust(8)} #{err_str.rjust(7)}"
+            end
+          end
+
+          if (cust_csv = s["custom_metrics_csv"]) && cust_csv.any?
+            lines << ""
+            lines << "  Custom timing metrics (CSV):"
+            cust_csv.each do |c|
+              lines << "    #{ICONS[:timing]} #{c["name"].ljust(34)} " \
+                       "avg=#{ms_str(c["avg_ms"])}  p95=#{ms_str(c["p95_ms"])}  max=#{ms_str(c["max_ms"])}"
+            end
+          end
         end
       end
 
