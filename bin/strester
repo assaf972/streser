@@ -1265,10 +1265,24 @@ module Parsers
         threshold_status = thresholds.values.all? { |t| t.values.all? { |v| v == "pass" } }
         check_status     = checks.all? { |c| c["fails"] == 0 }
 
+        # Duration: prefer state.testRunDurationMs; fall back to parsing the log file
+        run_ms = raw.dig("state", "testRunDurationMs")
+        if run_ms.nil?
+          log_file = f.sub(/-summary\.json$/, ".log")
+          if File.exist?(log_file)
+            log_text = File.read(log_file) rescue ""
+            # k6 prints: "running (1m01.1s, ...)" or "running (30.2s, ...)"
+            if (m = log_text.scan(/running \((\d+m)?(\d+\.?\d*)s,/).last)
+              run_ms = (m[0].to_i * 60 + m[1].to_f) * 1000
+            end
+          end
+        end
+
         result["scenarios"] << {
           "name"              => name,
           "timestamp"         => ts,
           "status"            => (threshold_status && check_status) ? "pass" : "fail",
+          "run_duration_s"    => run_ms ? (run_ms.to_f / 1000.0).round(1) : nil,
           "http_req_duration" => {
             "avg" => Parsers.ms(dur["avg"]), "min" => Parsers.ms(dur["min"]),
             "med" => Parsers.ms(dur["med"]), "p90" => Parsers.ms(dur["p(90)"]),
@@ -1281,7 +1295,10 @@ module Parsers
           "thresholds"        => thresholds,
           "checks"            => checks,
           "custom_metrics"    => custom,
-        }.tap { |s| s.delete("custom_metrics") if s["custom_metrics"].empty? }
+        }.tap { |s|
+          s.delete("custom_metrics") if s["custom_metrics"].empty?
+          s.delete("run_duration_s") if s["run_duration_s"].nil?
+        }
       end
 
       pass  = result["scenarios"].count { |s| s["status"] == "pass" }
@@ -1459,14 +1476,17 @@ module Parsers
             "score" => a["score"] ? (a["score"] * 100).round : nil }
         end
 
+        audit_ms = raw.dig("timing", "total")
+
         result["reports"] << {
           "file"            => File.basename(f),
           "url"             => url,
           "fetch_time"      => raw["fetchTime"],
+          "run_duration_s"  => audit_ms ? (audit_ms / 1000.0).round(1) : nil,
           "categories"      => cats,
           "core_web_vitals" => cwv,
           "status"          => cats.values.all? { |c| c["score"].to_i >= 50 } ? "pass" : "fail",
-        }
+        }.tap { |r| r.delete("run_duration_s") if r["run_duration_s"].nil? }
       end
 
       result["totals"] = {
@@ -1575,17 +1595,29 @@ module Commands
         ruby:       Parsers::Ruby.parse(File.join(target_dir, "ruby")),
       }
 
+      # ── Compute per-tool durations ─────────────────────────────────────────
+      tool_durations = {
+        k6:         parsed[:k6]["scenarios"].sum  { |s| s["run_duration_s"].to_f },
+        playwright: parsed[:playwright]["runs"].last&.dig("stats", "duration_ms").to_f / 1000.0,
+        cypress:    parsed[:cypress]["runs"].sum   { |r| r.dig("stats", "duration_ms").to_i } / 1000.0,
+        lighthouse: parsed[:lighthouse]["reports"].sum { |r| r["run_duration_s"].to_f },
+        ruby:       0.0,
+      }
+      total_duration_s = tool_durations.values.sum.round(1)
+
       # ── Build summary JSON ─────────────────────────────────────────────────
       overall_status = parsed.values.any? { |p| (p.dig("totals", "status") || "no_data") == "fail" } ? "fail" : "pass"
 
       summary = {
         "meta" => {
-          "generated"   => generated,
-          "slug"        => slug,
-          "target_url"  => cfg.dig("target", "base_url"),
-          "results_dir" => target_dir,
-          "status"      => overall_status,
-        },
+          "generated"          => generated,
+          "slug"               => slug,
+          "target_url"         => cfg.dig("target", "base_url"),
+          "results_dir"        => target_dir,
+          "status"             => overall_status,
+          "total_duration_s"   => total_duration_s > 0 ? total_duration_s : nil,
+          "duration_by_tool_s" => tool_durations.select { |_, v| v > 0 }.transform_keys(&:to_s),
+        }.compact,
         "totals" => {
           "overall_status" => overall_status,
           "by_tool"        => parsed.transform_values { |p| p["totals"] },
@@ -1609,25 +1641,30 @@ module Commands
       # Overall breakdown table
       lines << sec("#{ICONS[:summary]}  Overall Breakdown")
       lines << ""
-      lines << "  #{"Tool".ljust(14)} #{"Status".ljust(10)} Details"
-      lines << "  " + "─" * 60
+      lines << "  #{"Tool".ljust(14)} #{"Status".ljust(10)} #{"Duration".rjust(9)}   Details"
+      lines << "  " + "─" * 70
       parsed.each do |tool, data|
-        t      = data["totals"] || {}
-        status = t["status"] || "no_data"
-        icon   = status == "pass" ? ICONS[:pass] : (status == "fail" ? ICONS[:fail] : ICONS[:warn])
-        detail = case tool
-                 when :k6
-                   "#{t["scenarios"].to_i} scenario(s)  pass=#{t["pass"]}  fail=#{t["fail"]}"
-                 when :playwright, :cypress
-                   "#{t["runs"].to_i} run(s)  tests=#{t["tests"]}  ✅#{t["passed"]}  ❌#{t["failed"]}"
-                 when :lighthouse
-                   "#{t["reports"].to_i} report(s)  pass=#{t["pass"].to_i}  fail=#{t["fail"].to_i}"
-                 when :ruby
-                   "#{t["scripts"].to_i} script(s)  pass=#{t["pass"].to_i}  fail=#{t["fail"].to_i}"
-                 end
-        lines << "  #{tool.to_s.upcase.ljust(14)} #{icon} #{status.ljust(8)}  #{detail}"
+        t       = data["totals"] || {}
+        status  = t["status"] || "no_data"
+        icon    = status == "pass" ? ICONS[:pass] : (status == "fail" ? ICONS[:fail] : ICONS[:warn])
+        dur_s   = tool_durations[tool].to_f
+        dur_str = dur_s > 0 ? "#{dur_s.round(1)}s" : "—"
+        detail  = case tool
+                  when :k6
+                    "#{t["scenarios"].to_i} scenario(s)  pass=#{t["pass"]}  fail=#{t["fail"]}"
+                  when :playwright, :cypress
+                    "#{t["runs"].to_i} run(s)  tests=#{t["tests"]}  ✅#{t["passed"]}  ❌#{t["failed"]}"
+                  when :lighthouse
+                    "#{t["reports"].to_i} report(s)  pass=#{t["pass"].to_i}  fail=#{t["fail"].to_i}"
+                  when :ruby
+                    "#{t["scripts"].to_i} script(s)  pass=#{t["pass"].to_i}  fail=#{t["fail"].to_i}"
+                  end
+        lines << "  #{tool.to_s.upcase.ljust(14)} #{icon} #{status.ljust(8)}  #{dur_str.rjust(9)}   #{detail}"
       end
       lines << ""
+      if total_duration_s > 0
+        lines << "  #{ICONS[:timing]} Total test time:  #{total_duration_s}s  (#{(total_duration_s / 60.0).round(1)} min)"
+      end
 
       # ── k6 section ──────────────────────────────────────────────────────
       k6 = parsed[:k6]
@@ -1640,6 +1677,7 @@ module Commands
           icon = s["status"] == "pass" ? ICONS[:pass] : ICONS[:fail]
           lines << ""
           lines << "  #{icon} #{s["name"]}  [#{s["timestamp"]}]"
+          lines << metric_row("test duration",   "#{s["run_duration_s"]}s") if s["run_duration_s"]
           d = s["http_req_duration"] || {}
           lines << metric_row("avg / med / max", "#{ms_str(d["avg"])} / #{ms_str(d["med"])} / #{ms_str(d["max"])}")
           lines << metric_row("p90 / p95 / p99", "#{ms_str(d["p90"])} / #{ms_str(d["p95"])} / #{ms_str(d["p99"])}")
@@ -1765,6 +1803,7 @@ module Commands
         lh["reports"].each do |rep|
           lines << ""
           lines << "  #{ICONS[:web]} #{rep["url"]}"
+          lines << metric_row("audit duration", "#{rep["run_duration_s"]}s") if rep["run_duration_s"]
           rep["categories"].each do |_k, cat|
             score = cat["score"].to_i
             icon  = score >= 90 ? ICONS[:pass] : (score >= 50 ? ICONS[:warn] : ICONS[:fail])
@@ -1802,6 +1841,10 @@ module Commands
         all_errors.each { |e| lines << "  #{ICONS[:fail]} #{e["file"]}: #{e["error"].truncate(70)}" }
       end
 
+      lines << ""
+      if total_duration_s > 0
+        lines << field("#{ICONS[:timing]} Total test time", "#{total_duration_s}s  (#{(total_duration_s / 60.0).round(1)} min)")
+      end
       lines << ""
       lines << hdr("END OF REPORT")
       lines << "  JSON: #{json_file}"

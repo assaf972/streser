@@ -73,12 +73,18 @@ All output lands in `perf/results/<Name>-<Version>/`.
   "target": {
     "name": "Labguru",
     "version": "v6.41.2",
-    "base_url": "http://localhost:3000",
+    "base_url": "http://admin.lvh.me:3000/auth/login",
     "start_page_url": ""
   },
   "auth": {
     "user_a_token_env": "PERF_TOKEN_USER_A",
     "user_b_token_env": "PERF_TOKEN_USER_B"
+  },
+  "admin_login": {
+    "email": "admin.example.com",
+    "password_env": "PERF_ADMIN_PASSWORD",
+    "login_path": "/auth/login",
+    "tenants_path": "/admin/resources/tenants"
   },
   "output": {
     "format": "csv",
@@ -95,6 +101,10 @@ All output lands in `perf/results/<Name>-<Version>/`.
 | `target.start_page_url` | Optional URL with auth token embedded for Lighthouse login |
 | `auth.user_a_token_env` | Name of the env var that holds User A's API token |
 | `auth.user_b_token_env` | Name of the env var that holds User B's API token |
+| `admin_login.email` | Admin username / email for form-based login tests (PR-13) |
+| `admin_login.password_env` | Name of the env var holding the admin password — never store the password value here |
+| `admin_login.login_path` | Path of the login form page (default: `/auth/login`) |
+| `admin_login.tenants_path` | Path of the admin tenants page measured by PR-13 |
 | `output.format` | k6 raw output format: `csv` (default) or `json` |
 | `output.results_dir` | Root folder for all results (relative to repo root) |
 
@@ -110,6 +120,8 @@ All output lands in `perf/results/<Name>-<Version>/`.
 | `PERF_TOKEN_USER_B` | For cross-user tests | API token for a second user. Used by tests that verify multi-user isolation (e.g. `pr8-cross-user`). |
 | `PERF_EMAIL` | For Cypress | Login email for Cypress UI tests that use form-based login. |
 | `PERF_PASSWORD` | For Cypress | Login password for Cypress UI tests. |
+| `PERF_ADMIN_EMAIL` | For PR-13 | Admin username / email for the login-to-tenants test. Defaults to the value in `strester.json → admin_login.email`. |
+| `PERF_ADMIN_PASSWORD` | For PR-13 | Admin password. **Never commit this value** — always pass via env var. |
 | `BASE_URL` | Optional override | Overrides `target.base_url` from config at runtime. |
 
 Set them in your shell before running:
@@ -119,6 +131,7 @@ export PERF_TOKEN_USER_A=abc123
 export PERF_TOKEN_USER_B=def456
 export PERF_EMAIL=tester@example.com
 export PERF_PASSWORD=secret
+export PERF_ADMIN_PASSWORD=SecurePassword123!
 ```
 
 ---
@@ -158,6 +171,15 @@ bin/strester run playwright/tests/pr0-base-url-load.spec.ts
 # Cypress functional test
 bin/strester run cypress/e2e/pr0-base-url-load.cy.js
 
+# Lighthouse base URL audit (no auth)
+bin/strester run lighthouse/lighthouse-base.js
+
+# Lighthouse authenticated tenants audit (PR-13)
+bin/strester run lighthouse/lighthouserc.js
+
+# Run in quiet mode — shows spinner instead of live output
+bin/strester run k6/scenarios/pr3-index.js -q
+
 # Run in background (non-blocking)
 bin/strester run k6/scenarios/pr3-index.js --bg
 ```
@@ -176,6 +198,8 @@ bin/strester run k6/scenarios/pr3-index.js --bg
 
 **`--bg` flag:** Spawns the test in the background and returns immediately. Use `strester monitor` to watch it and `strester stop` to kill it.
 
+**`-q` / `-p` / `--quiet` flag:** Suppresses live test output. Shows a spinner with the test name while it runs, then prints `done` or `failed` with elapsed time. All output is still written to the log file.
+
 ---
 
 ### 4.3 `strester run all`
@@ -184,6 +208,9 @@ Runs every discovered test file across all tools, one by one.
 
 ```bash
 bin/strester run all
+
+# Quiet mode — live progress bar instead of per-test output
+bin/strester run all -q
 
 # Run all in background
 bin/strester run all --bg
@@ -197,7 +224,7 @@ bin/strester run all --bg
 4. Prints a final summary table with ✅/❌ per test and total elapsed time
 5. Exits with code 1 if any test failed
 
-**Example output:**
+**Normal mode example output:**
 
 ```
 strester run all — Complete
@@ -209,6 +236,18 @@ cypress      pr0-base-url-load.cy.js     34.7s      ✅
 
 Passed: 2 / 3  (total time: 115.1s)
 Failed: 1
+```
+
+**Quiet mode (`-q`) example output:**
+
+```
+  [████████████░░░░░░░░░░░░░░░░] 4/12 33%  k6: pr3-index.js  42s elapsed · ETA 86s
+```
+As each test finishes a result row is printed and the progress bar advances:
+```
+  ✅ 🔥 k6    pr0-base-url-load.js                 62.3s
+  ❌ 🎭 playwright  pr0-base-url-load.spec.ts       18.1s
+  [████████████████████████████░░] 11/12 91%  ...
 ```
 
 ---
@@ -345,7 +384,16 @@ perf/
 - `pr1` — compound creation (API + UI)
 - `pr3` — grid / index page
 - `pr12` — deletion
+- `pr13` — admin login → tenants page
 - etc.
+
+**Lighthouse files** in `perf/lighthouse/`:
+
+| File | Purpose |
+|---|---|
+| `lighthouse-base.js` | PR-0 direct Lighthouse config — audits the base URL (no authentication) |
+| `lighthouserc.js` | PR-13 LHCI config — audits `/admin/resources/tenants` after logging in |
+| `puppeteer-login.js` | Shared authentication script used by `lighthouserc.js` to log in before each audit |
 
 ---
 
@@ -624,21 +672,24 @@ Human-readable. Designed to be readable in any terminal, text editor, or copy-pa
                   📊  PERFORMANCE TEST REPORT — Labguru-v6.41.2
 ================================================================================
   Generated      30 May 2026  20:27:57 IDT
-  🎯 Target       http://localhost:3000
+  🎯 Target       http://admin.lvh.me:3000/auth/login
   📁 Results      perf/results/Labguru-v6.41.2
   Status         ❌ FAIL
 
 ─── 📋  Overall Breakdown ───────────────────────────────────────────────────────
 
-  Tool           Status     Details
-  ────────────────────────────────────────────────────────────
-  K6             ✅ pass      1 scenario(s)  pass=1  fail=0
-  PLAYWRIGHT     ❌ fail      4 run(s)  tests=1  ✅0  ❌1
-  CYPRESS        ⚠️  no_data   0 run(s)  tests=0  ✅0  ❌0
+  Tool           Status      Duration   Details
+  ──────────────────────────────────────────────────────────────────────
+  K6             ✅ pass        62.3s   1 scenario(s)  pass=1  fail=0
+  PLAYWRIGHT     ❌ fail        18.1s   4 run(s)  tests=1  ✅0  ❌1
+  CYPRESS        ⚠️  no_data        —   0 run(s)  tests=0  ✅0  ❌0
+
+  ⏱️  Total test time:  80.4s  (1.3 min)
 
 ─── 🔥  k6 Load Tests  (1 scenario(s)) ─────────────────────────────────────────
 
   ✅ pr0-base-url-load.js  [20260530-195404]
+    test duration              62.3s
     avg / med / max            43.1ms / 40.3ms / 292.8ms
     p90 / p95 / p99            69.2ms / 86.3ms / N/A
     requests                   580  (9.557 req/s)
@@ -683,9 +734,11 @@ Machine-readable. Structured for programmatic consumption, CI comparisons, or AI
   "meta": {
     "generated": "30 May 2026  20:27:57 IDT",
     "slug": "Labguru-v6.41.2",
-    "target_url": "http://localhost:3000",
+    "target_url": "http://admin.lvh.me:3000/auth/login",
     "results_dir": "/path/to/perf/results/Labguru-v6.41.2",
-    "status": "fail"
+    "status": "fail",
+    "total_duration_s": 80.4,
+    "duration_by_tool_s": { "k6": 62.3, "playwright": 18.1 }
   },
   "totals": {
     "overall_status": "fail",
@@ -704,6 +757,7 @@ Machine-readable. Structured for programmatic consumption, CI comparisons, or AI
           "name": "pr0-base-url-load.js",
           "timestamp": "20260530-195404",
           "status": "pass",
+          "run_duration_s": 62.3,
           "http_req_duration": {
             "avg": 43.078, "min": 13.425, "med": 40.268,
             "p90": 69.174, "p95": 86.337, "p99": null, "max": 292.769
@@ -753,6 +807,30 @@ Machine-readable. Structured for programmatic consumption, CI comparisons, or AI
 ---
 
 ## 9. Typical Workflows
+
+### Run the admin login → tenants test
+
+```bash
+# Set the admin password (never commit this)
+export PERF_ADMIN_PASSWORD=SecurePassword123!
+
+# k6 HTTP-level login + tenants navigation
+bin/strester run k6/scenarios/pr13-login-to-tenants.js
+
+# Playwright browser login + tenants timing (3 runs, p95 assertion)
+bin/strester run playwright/tests/pr13-login-to-tenants.spec.ts
+
+# Cypress browser login + tenants timing
+bin/strester run cypress/e2e/pr13-login-to-tenants.cy.js
+
+# Lighthouse audit of tenants page (LHCI, 3 runs, authenticated)
+bin/strester run lighthouse/lighthouserc.js
+
+# Generate report with durations
+bin/strester report
+```
+
+---
 
 ### Run a single test and inspect results
 
@@ -864,3 +942,15 @@ This is expected. All output files include timestamps so they never overwrite ea
 ### `strester report` shows `no_data` for a tool
 
 The tool produced no result files this cycle. Either the test wasn't run, or it crashed before writing output. Check the `.log` file in the tool's results subfolder for details.
+
+### Lighthouse `[lhci-auth] Login error: No email input found`
+
+The selector list in `puppeteer-login.js` didn't match any field on the login page. Open the login page in a browser, inspect the email input's `name` or `id` attribute, and add it to the `emailSelectors` array in `perf/lighthouse/puppeteer-login.js`.
+
+### Lighthouse audit fails immediately after login
+
+This usually means the login succeeded but the session cookie wasn't carried over. Ensure `waitUntil: 'networkidle2'` is in the `waitForNavigation` call inside `puppeteer-login.js`. If the app uses SPA routing, try `waitUntil: 'load'` instead.
+
+### k6 `422 Unprocessable Entity` on login POST
+
+The CSRF token extraction regex didn't match. The Rails app may use a different attribute order. Check the actual HTML source of `/auth/login` and adjust the regex in `pr13-login-to-tenants.js` if needed.
