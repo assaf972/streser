@@ -1,0 +1,126 @@
+{
+    "PR-1-UI-Create": {
+        "simple_ms": 2000,
+        "standard_ms": 3000,
+        "complex_ms": 5000
+    },
+    "PR-1-UI-Edit": {
+        "simple_ms": 2500,
+        "standard_ms": 3500,
+        "complex_ms": 6000,
+        "ketcher_prefill_ms": 2000
+    },
+    "PR-1-API-Create": {
+        "simple_ms": 1000,
+        "standard_ms": 2000,
+        "complex_ms": 4000
+    },
+    "PR-1-API-Update": {
+        "simple_ms": 1500,
+        "standard_ms": 2500,
+        "complex_ms": 5000
+    },
+    "PR-1-API-Bulk": {
+        "sync_post_ms": 1000,
+        "async_100_ops_ms": 60000,
+        "async_1k_ops_ms": 300000,
+        "async_10k_ops_ms": 1800000
+    },
+    "PR-1-Validation-Single": {
+        "malformed_ms": 200,
+        "sanitization_ms": 500,
+        "unsupported_type_ms": 1000,
+        "custom_field_ms": 1000
+    },
+    "PR-2b-Text": {
+        "at_1m_ms": 1000,
+        "degradation_factor": 2
+    },
+    "PR-2b-Property": {
+        "at_1m_ms": 2000,
+        "degradation_factor": 2
+    },
+    "PR-3-Index": {
+        "page_20_100k_ms": 1000,
+        "page_20_1m_ms": 2000,
+        "page_50_100k_ms": 1500,
+        "page_50_1m_ms": 2500,
+        "page_100_100k_ms": 2000,
+        "page_100_1m_ms": 3000,
+        "page_200_100k_ms": 3000,
+        "page_200_1m_ms": 4000
+    },
+    "PR-3-Filter": {
+        "text_name_ms": 1000,
+        "text_sysid_ms": 500,
+        "numeric_range_ms": 2000,
+        "boolean_ms": 2000,
+        "custom_field_ms": 2000,
+        "parent_linkage_ms": 1000,
+        "multi_filter_factor": 1.5
+    },
+    "PR-3-Sort": {
+        "text_column_ms": 2000,
+        "numeric_property_ms": 2000,
+        "custom_field_ms": 2000,
+        "filter_plus_sort_ms": 3000
+    },
+    "PR-3-Detail": {
+        "load_ms": 1000
+    },
+    "PR-3-Parent": {
+        "normal_ms": 1000,
+        "1k_versions_ms": 2000
+    },
+    "PR-5-Dedup": {
+        "max_duplicate_parents": 0
+    },
+    "PR-6-Small": {
+        "10k_xlsx_ms": 600000
+    },
+    "PR-6-Large": {
+        "100k_csv_ms": 1800000
+    },
+    "PR-7-Ready": {
+        "toolbar_ms": 1500
+    },
+    "PR-7-Load": {
+        "canvas_ms": 2000
+    },
+    "PR-7-Input": {
+        "paste_smiles_ms": 1000,
+        "upload_file_ms": 3000
+    },
+    "PR-8": {
+        "degradation_factor": 2
+    },
+    "PR-9-Global": {
+        "first_results_ms": 1000
+    },
+    "PR-12-Delete-Single": {
+        "delete_ms": 1000
+    },
+    "PR-12-Delete-Bulk": {
+        "delete_20_ms": 2000,
+        "delete_200_ms": 5000
+    },
+    "PR-X1-SDF": {
+        "1k_ms": 900000,
+        "10k_ms": 1800000,
+        "60k_ms": 7200000,
+        "100k_ms": 10800000
+    },
+    "PR-11-SDF": {
+        "100_ms": 60000,
+        "1k_ms": 300000
+    },
+    "PR-11-Excel": {
+        "100_ms": 60000,
+        "1k_ms": 300000,
+        "10k_ms": 1800000
+    },
+    "PR-4-Single": {
+        "chemistry_pipeline_ms": 60000,
+        "image_generation_ms": 300000
+    }
+}

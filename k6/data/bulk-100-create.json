@@ -1,0 +1,164 @@
+{
+    "operations": [
+        {
+            "operation_id": "op-1",
+            "action": "create",
+            "data": {
+                "smiles": "c1ccccc1",
+                "name": "Benzene"
+            }
+        },
+        {
+            "operation_id": "op-2",
+            "action": "create",
+            "data": {
+                "smiles": "CCO",
+                "name": "Ethanol"
+            }
+        },
+        {
+            "operation_id": "op-3",
+            "action": "create",
+            "data": {
+                "smiles": "CC(=O)O",
+                "name": "Acetic acid"
+            }
+        },
+        {
+            "operation_id": "op-4",
+            "action": "create",
+            "data": {
+                "smiles": "c1ccncc1",
+                "name": "Pyridine"
+            }
+        },
+        {
+            "operation_id": "op-5",
+            "action": "create",
+            "data": {
+                "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+                "name": "Aspirin"
+            }
+        },
+        {
+            "operation_id": "op-6",
+            "action": "create",
+            "data": {
+                "smiles": "CC(C)Cc1ccc(cc1)C(C)C(=O)O",
+                "name": "Ibuprofen"
+            }
+        },
+        {
+            "operation_id": "op-7",
+            "action": "create",
+            "data": {
+                "smiles": "Cn1c(=O)c2c(ncn2C)n(C)c1=O",
+                "name": "Caffeine"
+            }
+        },
+        {
+            "operation_id": "op-8",
+            "action": "create",
+            "data": {
+                "smiles": "CC(=O)Nc1ccc(O)cc1",
+                "name": "Acetaminophen"
+            }
+        },
+        {
+            "operation_id": "op-9",
+            "action": "create",
+            "data": {
+                "smiles": "Oc1ccccc1",
+                "name": "Phenol"
+            }
+        },
+        {
+            "operation_id": "op-10",
+            "action": "create",
+            "data": {
+                "smiles": "Nc1ccccc1",
+                "name": "Aniline"
+            }
+        },
+        {
+            "operation_id": "op-11",
+            "action": "create",
+            "data": {
+                "smiles": "c1ccoc1",
+                "name": "Furan"
+            }
+        },
+        {
+            "operation_id": "op-12",
+            "action": "create",
+            "data": {
+                "smiles": "c1ccsc1",
+                "name": "Thiophene"
+            }
+        },
+        {
+            "operation_id": "op-13",
+            "action": "create",
+            "data": {
+                "smiles": "CC(C)O",
+                "name": "Isopropanol"
+            }
+        },
+        {
+            "operation_id": "op-14",
+            "action": "create",
+            "data": {
+                "smiles": "CCCO",
+                "name": "Propanol"
+            }
+        },
+        {
+            "operation_id": "op-15",
+            "action": "create",
+            "data": {
+                "smiles": "CC#N",
+                "name": "Acetonitrile"
+            }
+        },
+        {
+            "operation_id": "op-16",
+            "action": "create",
+            "data": {
+                "smiles": "CCOC(=O)C",
+                "name": "Ethyl acetate"
+            }
+        },
+        {
+            "operation_id": "op-17",
+            "action": "create",
+            "data": {
+                "smiles": "OCCO",
+                "name": "Ethylene glycol"
+            }
+        },
+        {
+            "operation_id": "op-18",
+            "action": "create",
+            "data": {
+                "smiles": "OCC(O)CO",
+                "name": "Glycerol"
+            }
+        },
+        {
+            "operation_id": "op-19",
+            "action": "create",
+            "data": {
+                "smiles": "NCC(=O)O",
+                "name": "Glycine"
+            }
+        },
+        {
+            "operation_id": "op-20",
+            "action": "create",
+            "data": {
+                "smiles": "c1ccc2ccccc2c1",
+                "name": "Naphthalene"
+            }
+        }
+    ]
+}

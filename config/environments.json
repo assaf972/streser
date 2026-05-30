@@ -1,0 +1,16 @@
+{
+    "staging": {
+        "baseUrl": "https://staging.labguru.com",
+        "tokens": {
+            "userA": "REPLACE_WITH_STAGING_TOKEN_A",
+            "userB": "REPLACE_WITH_STAGING_TOKEN_B"
+        }
+    },
+    "performance": {
+        "baseUrl": "https://perf.labguru.com",
+        "tokens": {
+            "userA": "REPLACE_WITH_PERF_TOKEN_A",
+            "userB": "REPLACE_WITH_PERF_TOKEN_B"
+        }
+    }
+}

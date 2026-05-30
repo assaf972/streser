@@ -1,0 +1,16 @@
+results/*.json
+# Generated test-run output (versioned folders like Labguru-v6.41.2/)
+results/*/
+!results/.gitkeep
+playwright/playwright-report/
+playwright/test-results/
+playwright/node_modules/
+cypress/node_modules/
+**/videos/
+**/screenshots/
+lighthouse/node_modules/
+lighthouse/.lighthouseci/
+config/environments.local.json
+imports/*.sdf
+imports/*.xlsx
+!imports/.gitkeep

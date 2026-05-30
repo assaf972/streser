@@ -1,0 +1,1960 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+#
+# strester v1.0.0 — Labguru Performance Test Runner
+#
+# Wraps k6, Playwright, Cypress, Lighthouse, and Sentry CLI into a single
+# TUI-driven orchestrator. Reads perf/config/strester.json for the target
+# version, base URL, and output settings. All results land in versioned folders:
+#   perf/results/<TargetName>-<Version>/
+#
+# Commands:
+#   strester setup                    Install all supported tools locally
+#   strester run <file>               Run one test (tool auto-detected by path)
+#   strester run all                  Run every test file across all tools
+#   strester run folder <folder>      Run all tests in a folder
+#   strester monitor                  Live status of running background tests
+#   strester list tests               List every available test file
+#   strester stop                     Kill all running tests
+#   strester summary [Name-Version]   Print a formatted summary report
+#   strester report  [Name-Version]   Detailed TXT report of all output files
+#   strester config                   Show active configuration
+#   strester help / --help            Show this message
+
+STRESTER_VERSION = "1.0.0"
+
+# ── Gem bootstrap (installed once, cached by bundler after that) ──────────────
+require "bundler/inline"
+
+gemfile(false, quiet: !ENV["STRESTER_DEBUG"]) do
+  source "https://rubygems.org"
+  gem "tty-prompt",  "~> 0.23"
+  gem "tty-spinner", "~> 0.9"
+  gem "tty-table",   "~> 0.12"
+  gem "tty-screen",  "~> 0.8"
+  gem "pastel",      "~> 0.8"
+end
+
+require "json"
+require "open3"
+require "fileutils"
+require "time"
+require "rbconfig"
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+
+PERF_DIR    = File.expand_path("..", __dir__).freeze          # …/perf
+REPO_ROOT   = File.expand_path("../..", __dir__).freeze       # repo root
+CONFIG_FILE = File.join(PERF_DIR, "config", "strester.json").freeze
+STATE_FILE  = File.join(PERF_DIR, "results", ".strester_state.json").freeze
+
+# ── String helpers ────────────────────────────────────────────────────────────
+
+class String
+  def truncate(len) = length > len ? "#{self[0...len]}…" : self
+  def strip_ansi    = gsub(/\e\[\d+(;\d+)*m/, "")
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UI — terminal output helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+module UI
+  C = Pastel.new
+
+  TOOL_COLOR = {
+    k6: :cyan, playwright: :blue, cypress: :green,
+    lighthouse: :yellow, sentry: :magenta, ruby: :red,
+  }.freeze
+
+  ICON = { pass: "✅", fail: "❌", warn: "⚠️ ", info: "ℹ️ ", run: "🏃" }.freeze
+
+  def self.width = [TTY::Screen.width, 120].min
+
+  def self.header(title)
+    w    = width
+    line = C.bold.cyan("─" * w)
+    puts line
+    puts C.bold.white((" " * [(w - title.length) / 2, 0].max) + title)
+    puts line
+  end
+
+  def self.section(title)
+    pad = [width - title.length - 4, 4].max
+    puts "\n" + C.bold.cyan("── #{title} ") + C.dim("─" * pad)
+  end
+
+  def self.success(msg) = puts "#{ICON[:pass]}  #{C.green(msg)}"
+  def self.error(msg)   = puts "#{ICON[:fail]}  #{C.red(msg)}"
+  def self.warn(msg)    = puts "#{ICON[:warn]} #{C.yellow(msg)}"
+  def self.info(msg)    = puts "#{ICON[:info]} #{C.cyan(msg)}"
+  def self.dim(msg)     = puts C.dim(msg)
+
+  def self.tool_badge(tool)
+    color = TOOL_COLOR.fetch(tool.to_sym, :white)
+    C.send(color).bold(tool.to_s.upcase.ljust(11))
+  end
+
+  def self.table(headers, rows, title: nil)
+    puts C.dim("  #{title}") if title
+    if rows.empty?
+      puts C.dim("  (none)")
+      return
+    end
+    tbl = TTY::Table.new(
+      header: headers.map { |h| C.bold(h) },
+      rows:   rows,
+    )
+    puts tbl.render(:unicode, padding: [0, 1], width: width - 2)
+  rescue StandardError
+    # Graceful fallback when tty-table render fails
+    puts "  " + headers.join("  |  ")
+    rows.each { |r| puts "  " + r.map(&:to_s).join("  |  ") }
+  end
+
+  def self.spinner(label, &block)
+    sp = TTY::Spinner.new(C.cyan("[:spinner]") + " #{label}", format: :dots, clear: true)
+    sp.auto_spin
+    result = block.call
+    sp.success(C.green("done"))
+    result
+  rescue StandardError => e
+    sp.error(C.red("failed"))
+    raise e
+  end
+
+  def self.prompt           = TTY::Prompt.new
+  def self.confirm(q, **kw) = prompt.yes?(q, **kw)
+  def self.select(q, opts)  = prompt.select(q, opts)
+  def self.ask(q, **kw)     = prompt.ask(q, **kw)
+  def self.multi_select(q, opts, **kw) = prompt.multi_select(q, opts, **kw)
+
+  def self.clear_screen = print "\e[2J\e[H"
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Config — reads perf/config/strester.json
+# ─────────────────────────────────────────────────────────────────────────────
+
+module Config
+  DEFAULTS = {
+    "target"  => { "name" => "Labguru", "version" => "dev",
+                   "base_url" => "http://localhost:3000", "start_page_url" => "" },
+    "chemwiz" => { "name" => "Chemwhiz", "version" => "unknown" },
+    "auth"    => { "user_a_token_env" => "PERF_TOKEN_USER_A",
+                   "user_b_token_env" => "PERF_TOKEN_USER_B" },
+    "output"  => { "format" => "csv", "results_dir" => "perf/results" },
+  }.freeze
+
+  def self.load
+    return DEFAULTS.dup unless File.exist?(CONFIG_FILE)
+    raw = JSON.parse(File.read(CONFIG_FILE))
+    raw.reject! { |k, _| k.start_with?("_") }  # strip comment keys
+    DEFAULTS.merge(raw) { |_, d, v| d.is_a?(Hash) ? d.merge(v) : v }
+  rescue JSON::ParserError => e
+    UI.error("Config parse error (#{CONFIG_FILE}): #{e.message}")
+    DEFAULTS.dup
+  end
+
+  def self.version_slug(cfg = load) = "#{cfg.dig("target","name")}-#{cfg.dig("target","version")}"
+
+  def self.output_dir(cfg = load)
+    base = File.join(REPO_ROOT, cfg.dig("output", "results_dir"))
+    File.join(base, version_slug(cfg))
+  end
+
+  def self.token_a(cfg = load)
+    ENV[cfg.dig("auth", "user_a_token_env") || "PERF_TOKEN_USER_A"]
+  end
+
+  def self.token_b(cfg = load)
+    ENV[cfg.dig("auth", "user_b_token_env") || "PERF_TOKEN_USER_B"]
+  end
+
+  def self.start_page_url(cfg = load)
+    url = cfg.dig("target", "start_page_url") || ""
+    url.gsub("${PERF_TOKEN_USER_A}", token_a(cfg) || "")
+       .gsub("${PERF_TOKEN_USER_B}", token_b(cfg) || "")
+  end
+
+  def self.ensure_token!(cfg = load)
+    return token_a(cfg) if token_a(cfg)
+    env_name = cfg.dig("auth", "user_a_token_env") || "PERF_TOKEN_USER_A"
+    UI.warn("$#{env_name} is not set.")
+    value = UI.ask("Enter API token for User A:", default: nil)
+    abort("Token required to run tests.") unless value&.strip&.length&.positive?
+    ENV[env_name] = value.strip
+    value.strip
+  end
+
+  def self.print(cfg = load)
+    rows = [
+      ["Target",         "#{cfg.dig("target","name")} #{cfg.dig("target","version")}"],
+      ["Base URL",       cfg.dig("target","base_url")],
+      ["Start page",     cfg.dig("target","start_page_url").to_s.truncate(70)],
+      ["ChemWiz",        "#{cfg.dig("chemwiz","name")} #{cfg.dig("chemwiz","version")}"],
+      ["Output dir",     output_dir(cfg)],
+      ["Output format",  cfg.dig("output","format")],
+      ["Token A env",    cfg.dig("auth","user_a_token_env") + (token_a(cfg) ? " ✅" : " ❌ not set")],
+      ["Token B env",    cfg.dig("auth","user_b_token_env") + (token_b(cfg) ? " ✅" : " ❌ not set")],
+    ]
+    rows.each { |k, v| printf "  %-18s %s\n", UI::C.dim("#{k}:"), v }
+  end
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# State — background process tracking via a JSON state file
+# ─────────────────────────────────────────────────────────────────────────────
+
+module State
+  def self.load
+    return { "processes" => [] } unless File.exist?(STATE_FILE)
+    JSON.parse(File.read(STATE_FILE))
+  rescue JSON::ParserError
+    { "processes" => [] }
+  end
+
+  def self.save(state)
+    FileUtils.mkdir_p(File.dirname(STATE_FILE))
+    File.write(STATE_FILE, JSON.pretty_generate(state))
+  end
+
+  def self.register(pid:, tool:, label:, log:)
+    state = load
+    state["processes"] << {
+      "pid"        => pid,
+      "tool"       => tool.to_s,
+      "label"      => label,
+      "log"        => log,
+      "started_at" => Time.now.iso8601,
+    }
+    save(state)
+  end
+
+  def self.deregister(pid)
+    state = load
+    state["processes"].reject! { |p| p["pid"] == pid }
+    save(state)
+  end
+
+  def self.alive?(pid)
+    Process.getpgid(pid.to_i)
+    true
+  rescue Errno::ESRCH, Errno::EPERM
+    false
+  end
+
+  def self.live_processes
+    purge!
+    load["processes"]
+  end
+
+  def self.purge!
+    state = load
+    before = state["processes"].size
+    state["processes"].select! { |p| alive?(p["pid"]) }
+    save(state) if state["processes"].size != before
+  end
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ToolDetector — maps file paths to tool names
+# ─────────────────────────────────────────────────────────────────────────────
+
+module ToolDetector
+  PATTERNS = {
+    k6:         [%r{k6/scenarios/.*\.js$}, /\.k6\.js$/],
+    playwright: [%r{playwright/tests/.*\.spec\.(ts|js)$}, /\.spec\.(ts|js)$/],
+    cypress:    [%r{cypress/.*\.cy\.(ts|js)$}, /\.cy\.(ts|js)$/],
+    lighthouse: [%r{lighthouse/.*\.(js|json|yaml)$}],
+    ruby:       [%r{scripts/.*\.rb$}],
+  }.freeze
+
+  SEARCH_DIRS = {
+    k6:         ["k6/scenarios", "{name}.js", "{name}"],
+    playwright: ["playwright/tests", "{name}.spec.ts", "{name}.spec.js", "{name}"],
+    cypress:    ["cypress/e2e", "{name}.cy.js", "{name}.cy.ts", "{name}"],
+    lighthouse: ["lighthouse", "{name}", "{name}.js", "{name}.json"],
+    ruby:       ["scripts", "{name}.rb", "{name}"],
+  }.freeze
+
+  def self.detect(path)
+    abs = File.expand_path(path.to_s)
+    PATTERNS.each { |tool, pats| return tool if pats.any? { |p| abs.match?(p) } }
+    nil
+  end
+
+  def self.find(name)
+    return File.expand_path(name) if File.exist?(name)
+
+    SEARCH_DIRS.each do |_tool, (dir, *templates)|
+      templates.each do |tpl|
+        candidate = File.join(PERF_DIR, dir, tpl.gsub("{name}", name))
+        return File.expand_path(candidate) if File.exist?(candidate)
+      end
+    end
+    nil
+  end
+
+  def self.all_tests
+    {
+      k6:         Dir.glob(File.join(PERF_DIR, "k6/scenarios/*.js")).sort,
+      playwright: Dir.glob(File.join(PERF_DIR, "playwright/tests/*.spec.{ts,js}")).sort,
+      cypress:    Dir.glob(File.join(PERF_DIR, "cypress/e2e/**/*.cy.{js,ts}")).sort,
+      lighthouse: Dir.glob(File.join(PERF_DIR, "lighthouse/*.{js,json,yaml}")).sort
+                     .reject { |f| File.basename(f).start_with?("package") },
+      ruby:       Dir.glob(File.join(PERF_DIR, "scripts/*.rb")).sort,
+    }.transform_values { |files| files.map { |f| { file: f, name: name_for(f) } } }
+  end
+
+  def self.tests_in_folder(folder)
+    abs = File.directory?(folder) ? folder : File.join(PERF_DIR, folder)
+    return [] unless File.directory?(abs)
+    Dir.glob(File.join(abs, "**", "*.{js,ts,rb,json,yaml}"))
+       .reject { |f| f.include?("node_modules") || f.include?("/helpers/") || f.include?("/support/") }
+       .filter_map { |f| (tool = detect(f)) ? { tool:, file: f, name: name_for(f) } : nil }
+  end
+
+  def self.name_for(path)
+    File.basename(path)
+        .sub(/\.spec\.(ts|js)$/, "")
+        .sub(/\.cy\.(ts|js)$/, "")
+        .sub(/\.k6\.js$/, "")
+        .sub(/\.rb$/, "")
+  end
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runners — tool-specific command builders and executors
+# ─────────────────────────────────────────────────────────────────────────────
+
+module Runners
+  class Base
+    attr_reader :cfg
+
+    def initialize
+      @cfg = Config.load
+    end
+
+    def tool   = :base
+    def ts     = Time.now.strftime("%Y%m%d-%H%M%S")
+    def outdir = File.join(Config.output_dir(cfg), tool.to_s)
+
+    # Run a test file. background: true → spawn and return PID; false → block until done.
+    # quiet: true → suppress live output; show spinner; still write to log.
+    def run(file, background: false, quiet: false)
+      FileUtils.mkdir_p(outdir)
+      cmd   = build_cmd(file)
+      env   = build_env
+      label = "#{tool.to_s.upcase}: #{File.basename(file)}"
+      log   = File.join(outdir, "#{ToolDetector.name_for(file)}-#{ts}.log")
+
+      puts ""
+      puts "  #{UI.tool_badge(tool)} #{UI::C.bold(File.basename(file))}"
+      puts "  #{UI::C.dim("cmd:")}    #{cmd.truncate(100)}"
+      puts "  #{UI::C.dim("output:")} #{outdir}"
+
+      if background
+        spawn_bg(cmd, env, log, label)
+      elsif quiet
+        run_quiet(cmd, env, log, label)
+      else
+        run_fg(cmd, env, log)
+      end
+    end
+
+    private
+
+    def spawn_bg(cmd, env, log, label)
+      FileUtils.mkdir_p(File.dirname(log))
+      pid = Process.spawn(env, "/bin/sh", "-c", cmd, out: log, err: log, pgroup: true)
+      Process.detach(pid)
+      State.register(pid:, tool:, label:, log:)
+      UI.info("Spawned in background (PID #{pid}) — use `strester monitor` to watch")
+      pid
+    end
+
+    # Quiet mode: suppress all output to console, only write to log, show spinner.
+    def run_quiet(cmd, env, log, label)
+      FileUtils.mkdir_p(File.dirname(log))
+      exit_code = nil
+      spinner = TTY::Spinner.new("  [:spinner] #{label}", format: :dots, clear: false)
+      spinner.auto_spin
+      File.open(log, "w") do |logfile|
+        Open3.popen2e(env, "/bin/sh", "-c", cmd) do |_in, out_err, wait|
+          out_err.each_line { |line| logfile.write(line) }
+          exit_code = wait.value.exitstatus
+        end
+      end
+      ok = exit_code == 0
+      spinner.stop(ok ? UI::C.green("done") : UI::C.red("failed"))
+      ok
+    end
+
+    def run_fg(cmd, env, log)
+      FileUtils.mkdir_p(File.dirname(log))
+      exit_code = nil
+      File.open(log, "w") do |logfile|
+        Open3.popen2e(env, "/bin/sh", "-c", cmd) do |_in, out_err, wait|
+          out_err.each_line do |line|
+            $stdout.print line
+            $stdout.flush
+            logfile.write(line)
+          end
+          exit_code = wait.value.exitstatus
+        end
+      end
+      exit_code == 0
+    end
+
+    def build_env
+      {
+        "BASE_URL"        => cfg.dig("target", "base_url") || "",
+        "START_PAGE_URL"  => Config.start_page_url(cfg),
+        "PERF_TOKEN_A"    => Config.token_a(cfg) || "",
+        "PERF_TOKEN_B"    => Config.token_b(cfg) || "",
+        "TARGET_VERSION"  => cfg.dig("target", "version") || "",
+        "OUTPUT_FORMAT"   => cfg.dig("output", "format") || "csv",
+        "OUTPUT_DIR"      => outdir,
+      }
+    end
+
+    def build_cmd(_file) = raise NotImplementedError
+  end
+
+  # ── k6 ──────────────────────────────────────────────────────────────────────
+  class K6 < Base
+    def tool = :k6
+
+    def build_cmd(file)
+      fmt      = cfg.dig("output", "format") || "csv"
+      base     = ToolDetector.name_for(file)
+      out_file = File.join(outdir, "#{base}-#{ts}.#{fmt}")
+      summary  = File.join(outdir, "#{base}-#{ts}-summary.json")
+      out_flag = fmt == "csv" ? "--out csv=#{out_file}" : "--out json=#{out_file}"
+
+      [
+        "k6 run",
+        "--env BASE_URL=#{cfg.dig("target","base_url")}",
+        "--env PERF_TOKEN_A=#{Config.token_a(cfg)}",
+        "--env PERF_TOKEN_B=#{Config.token_b(cfg)}",
+        "--env TARGET_VERSION=#{cfg.dig("target","version")}",
+        "--env OUTPUT_FORMAT=#{fmt}",
+        out_flag,
+        "--summary-export #{summary}",
+        file,
+      ].compact.join(" ")
+    end
+  end
+
+  # ── Playwright ───────────────────────────────────────────────────────────────
+  class Playwright < Base
+    def tool = :playwright
+
+    def build_cmd(file)
+      rel = file.sub("#{PERF_DIR}/playwright/", "")
+      report_json = File.join(outdir, "playwright-results-#{ts}.json")
+      report_html = File.join(outdir, "html-report")
+      "cd #{PERF_DIR}/playwright && " \
+        "PLAYWRIGHT_JSON_OUTPUT_NAME=#{report_json} " \
+        "npx playwright test #{rel} " \
+        "--reporter=list,json,html " \
+        "--output #{report_html}"
+    end
+  end
+
+  # ── Cypress ──────────────────────────────────────────────────────────────────
+  class Cypress < Base
+    def tool = :cypress
+
+    def build_cmd(file)
+      report      = File.join(outdir, "cypress-results-#{ts}.json")
+      config_file = File.join(PERF_DIR, "cypress", "cypress.config.js")
+      # spec path relative to the cypress/ working directory
+      spec = file.sub(File.join(PERF_DIR, "cypress") + "/", "")
+      "cd #{File.join(PERF_DIR, "cypress")} && " \
+        "npx cypress run --config-file #{config_file} --spec #{spec} --headless " \
+        "--reporter json --reporter-options output=#{report}"
+    end
+  end
+
+  # ── Lighthouse ───────────────────────────────────────────────────────────────
+  class Lighthouse < Base
+    def tool = :lighthouse
+
+    def build_cmd(file)
+      out_path = File.join(outdir, "lighthouse-#{ts}")
+      base_url = cfg.dig("target", "base_url")
+      cookie   = Config.start_page_url(cfg).empty? ? "" : "--extra-headers '{\"Cookie\":\"_session=${LHCI_AUTH_COOKIE}\"}'"
+
+      if File.basename(file) == "lighthouserc.js"
+        # Use LHCI (Lighthouse CI) runner
+        "cd #{PERF_DIR}/lighthouse && " \
+          "LHCI_BASE_URL=#{base_url} " \
+          "npx lhci autorun --config=lighthouserc.js " \
+          "--upload.outputDir=#{outdir}"
+      else
+        # Direct lighthouse audit of the base URL using the given config
+        "npx lighthouse #{base_url} " \
+          "--config-path=#{file} " \
+          "--output json,html " \
+          "--output-path #{out_path}"
+      end
+    end
+
+    def build_env
+      super.merge(
+        "LHCI_BASE_URL"    => cfg.dig("target", "base_url") || "",
+        "LHCI_COMPOUND_ID" => ENV.fetch("LHCI_COMPOUND_ID", "12345"),
+      )
+    end
+  end
+
+  # ── Sentry ───────────────────────────────────────────────────────────────────
+  # Sentry is a monitoring integration rather than a test runner.
+  # "Running" Sentry creates a release marker correlated with the test run.
+  class Sentry < Base
+    def tool = :sentry
+
+    def build_cmd(_file)
+      version  = cfg.dig("target", "version")
+      org      = ENV.fetch("SENTRY_ORG",   "labguru")
+      project  = ENV.fetch("SENTRY_PROJECT", "labguru-web")
+      [
+        "npx @sentry/cli releases new #{version} --org #{org} --project #{project}",
+        "npx @sentry/cli releases deploys #{version} new --env perf-test --org #{org} --project #{project}",
+        "echo 'Sentry release #{version} marked in project #{project}'",
+      ].join(" && ")
+    end
+  end
+
+  # ── Ruby ─────────────────────────────────────────────────────────────────────
+  class Ruby < Base
+    def tool = :ruby
+
+    def build_cmd(file)
+      rails_env = ENV.fetch("RAILS_ENV", "performance")
+      "cd #{REPO_ROOT} && RAILS_ENV=#{rails_env} bundle exec rails runner #{file}"
+    end
+  end
+
+  REGISTRY = { k6: K6, playwright: Playwright, cypress: Cypress, lighthouse: Lighthouse, sentry: Sentry, ruby: Ruby }.freeze
+
+  def self.for(tool)
+    klass = REGISTRY[tool.to_sym] or raise "No runner for tool: #{tool}"
+    klass.new
+  end
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Commands
+# ─────────────────────────────────────────────────────────────────────────────
+
+module Commands
+
+  # ── setup ────────────────────────────────────────────────────────────────────
+  module Setup
+    TOOLS = {
+      k6: {
+        label:   "k6 — API load testing",
+        check:   -> { `k6 version 2>/dev/null`.start_with?("k6 v") rescue false },
+        darwin:  "brew install k6",
+        linux:   "sudo apt-get install -y k6",
+      },
+      node: {
+        label:   "Node.js ≥ 20 — required for Playwright, Cypress, Lighthouse",
+        check:   -> { `node --version 2>/dev/null`.match?(/v[2-9]\d/) rescue false },
+        darwin:  "brew install node",
+        linux:   "curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs",
+      },
+      playwright: {
+        label:   "Playwright — UI performance timing",
+        check:   -> { `cd #{PERF_DIR}/playwright && npx playwright --version 2>/dev/null`.match?(/Version/) rescue false },
+        all:     "cd #{PERF_DIR}/playwright && npm install && npx playwright install chromium",
+      },
+      cypress: {
+        label:   "Cypress — functional UI verification",
+        check:   -> { `cd #{PERF_DIR} && npx cypress --version 2>/dev/null`.match?(/Cypress package/) rescue false },
+        all:     "cd #{PERF_DIR}/playwright && npm install cypress",
+      },
+      lhci: {
+        label:   "Lighthouse CI — Core Web Vitals / bundle budgets",
+        check:   -> { `npx lhci --version 2>/dev/null`.match?(/\d+\.\d+/) rescue false },
+        all:     "npm install -g @lhci/cli",
+      },
+      sentry: {
+        label:   "Sentry CLI — production monitoring integration",
+        check:   -> { `npx @sentry/cli --version 2>/dev/null`.match?(/\d+\.\d+/) rescue false },
+        all:     "npm install -g @sentry/cli",
+      },
+      jq: {
+        label:   "jq — JSON processor (required by shell wrapper scripts)",
+        check:   -> { `jq --version 2>/dev/null`.start_with?("jq-") rescue false },
+        darwin:  "brew install jq",
+        linux:   "sudo apt-get install -y jq",
+      },
+    }.freeze
+
+    # Full directory tree that must exist under PERF_DIR.
+    # Each entry is a path relative to PERF_DIR.
+    FOLDER_TREE = %w[
+      bin
+      config
+      cypress/e2e
+      cypress/fixtures
+      cypress/support
+      imports
+      k6/data
+      k6/helpers
+      k6/scenarios
+      lighthouse
+      playwright/fixtures
+      playwright/helpers
+      playwright/tests
+      results
+      scripts
+      sentry
+    ].freeze
+
+    def self.scaffold_folders(perf_root)
+      UI.section("Scaffolding perf/ folder tree")
+      created  = []
+      existing = []
+
+      FOLDER_TREE.each do |rel|
+        dir = File.join(perf_root, rel)
+        if File.directory?(dir)
+          existing << rel
+        else
+          FileUtils.mkdir_p(dir)
+          # Keep Git-trackable by adding an empty .keep file
+          File.write(File.join(dir, ".keep"), "") unless Dir.glob("#{dir}/*").any?
+          created << rel
+        end
+      end
+
+      if created.any?
+        created.each { |d| puts "  #{UI::C.green("created")}  #{d}/" }
+      end
+      existing.each { |d| puts "  #{UI::C.dim("exists")}   #{d}/" }
+
+      puts ""
+      UI.success("perf/ tree ready — #{created.size} folder(s) created, #{existing.size} already existed")
+    end
+
+    def self.run
+      UI.header("strester setup — Install Performance Tools")
+      platform = RbConfig::CONFIG["host_os"].match?(/darwin/) ? :darwin : :linux
+
+      scaffold_folders(PERF_DIR)
+
+      UI.section("Current Tool Status")
+      statuses = TOOLS.transform_values { |info| info[:check].call }
+      rows = TOOLS.map do |key, info|
+        ok = statuses[key]
+        [UI.tool_badge(key), info[:label], ok ? UI::C.green("✅ installed") : UI::C.red("❌ missing")]
+      end
+      UI.table(["Tool", "Description", "Status"], rows)
+
+      missing = statuses.select { |_, ok| !ok }.keys
+      if missing.empty?
+        UI.success("All tools are already installed!")
+        return
+      end
+
+      UI.section("Select Tools to Install")
+      choices = missing.map { |k| { name: TOOLS[k][:label], value: k } }
+      to_install = UI.multi_select("Which tools should I install?", choices, default: missing)
+      return UI.info("Nothing selected, exiting.") if to_install.empty?
+
+      to_install.each do |tool|
+        info = TOOLS[tool]
+        cmd  = info[platform] || info[:all]
+        unless cmd
+          UI.warn("No install method for #{tool} on #{platform} — install manually.")
+          next
+        end
+        UI.section("Installing: #{info[:label]}")
+        puts UI::C.dim("  $ #{cmd}")
+        success = system(cmd)
+        success ? UI.success("#{tool} installed") : UI.error("#{tool} install failed")
+      end
+
+      UI.section("Post-Install Status")
+      TOOLS.each do |key, info|
+        ok = info[:check].call
+        puts "  #{ok ? "✅" : "❌"}  #{UI.tool_badge(key)} #{info[:label]}"
+      end
+    end
+  end
+
+  # ── run ──────────────────────────────────────────────────────────────────────
+  module Run
+    PROGRESS_BAR_WIDTH = 28
+
+    def self.file(name, background: false, quiet: false)
+      UI.header("strester run — #{name}")
+
+      path = ToolDetector.find(name)
+      unless path
+        UI.error("Test file not found: #{name}")
+        UI.info("Try: strester list tests")
+        exit 1
+      end
+
+      tool = ToolDetector.detect(path)
+      unless tool
+        UI.error("Cannot determine tool for: #{path}")
+        UI.info("Supported patterns: #{ToolDetector::PATTERNS.map { |t,_| t }.join(", ")}")
+        exit 1
+      end
+
+      UI.section("Run Configuration")
+      Config.print
+      puts ""
+      puts "  #{UI::C.dim("file:")} #{path}"
+      puts "  #{UI::C.dim("tool:")} #{tool.to_s.upcase}"
+
+      Config.ensure_token!
+      runner  = Runners.for(tool)
+      t_start = Time.now
+      success = runner.run(path, background:, quiet:)
+      elapsed = (Time.now - t_start).round(1)
+
+      unless background
+        puts ""
+        if success
+          UI.success("Test completed in #{elapsed}s — results in #{Config.output_dir}")
+        else
+          UI.error("Test finished with failures after #{elapsed}s.")
+          exit 1
+        end
+      end
+    end
+
+    def self.folder(folder, background: false, quiet: false)
+      UI.header("strester run folder — #{folder}")
+
+      tests = ToolDetector.tests_in_folder(folder)
+      if tests.empty?
+        UI.error("No test files found in: #{folder}")
+        exit 1
+      end
+
+      UI.section("Tests Found (#{tests.size})")
+      rows = tests.map { |t| [UI.tool_badge(t[:tool]), t[:name], t[:file].sub("#{PERF_DIR}/", "")] }
+      UI.table(["Tool", "Name", "Path"], rows)
+
+      unless UI.confirm("Run all #{tests.size} tests?", default: true)
+        UI.info("Cancelled.")
+        return
+      end
+
+      Config.ensure_token!
+      pass = 0; fail_count = 0
+
+      tests.each do |t|
+        ok = Runners.for(t[:tool]).run(t[:file], background:, quiet:)
+        ok ? pass += 1 : fail_count += 1
+      end
+
+      UI.section("Folder Run Complete")
+      UI.success("Passed: #{pass}") if pass > 0
+      UI.error("Failed: #{fail_count}")   if fail_count > 0
+      exit 1 if fail_count > 0
+    end
+
+    def self.all(background: false, quiet: false)
+      UI.header("strester run all#{quiet ? "  [quiet mode]" : ""}")
+
+      grouped = ToolDetector.all_tests
+      total   = grouped.values.sum(&:size)
+
+      if total == 0
+        UI.warn("No test files found under #{PERF_DIR}")
+        UI.info("Add tests to k6/scenarios/, playwright/tests/, cypress/e2e/, etc.")
+        return
+      end
+
+      UI.section("Tests Found (#{total} across #{grouped.count { |_, v| v.any? }} tools)")
+      rows = grouped.flat_map do |tool, tests|
+        tests.map { |t| [UI.tool_badge(tool), t[:name], t[:file].sub("#{PERF_DIR}/", "")] }
+      end
+      UI.table(["Tool", "Name", "Path"], rows)
+
+      unless UI.confirm("Run all #{total} tests sequentially?", default: true)
+        UI.info("Cancelled.")
+        return
+      end
+
+      Config.ensure_token!
+
+      results       = []
+      overall_start = Time.now
+      all_tests     = grouped.flat_map { |tool, tests| tests.map { |t| t.merge(tool: tool) } }
+
+      if quiet
+        # ── Progress-meter mode ────────────────────────────────────────────
+        puts ""
+        w = [UI.width, 100].min
+
+        all_tests.each_with_index do |t, idx|
+          done      = idx
+          filled    = (PROGRESS_BAR_WIDTH * done.to_f / total).round
+          bar       = UI::C.green("█" * filled) + UI::C.dim("░" * (PROGRESS_BAR_WIDTH - filled))
+          pct       = (100 * done.to_f / total).round
+          elapsed_s = (Time.now - overall_start).round(0)
+          eta_s     = done > 0 ? ((Time.now - overall_start) / done * (total - done)).round(0) : "?"
+          label     = "#{UI.tool_badge(t[:tool])} #{t[:name]}".strip_ansi.truncate(35)
+          status_line = "  [#{bar}] #{done}/#{total} #{pct}%  #{label}  #{elapsed_s}s elapsed · ETA #{eta_s}s"
+          print "\r#{status_line.ljust(w)}"
+          $stdout.flush
+
+          t_start = Time.now
+          ok      = Runners.for(t[:tool]).run(t[:file], background: false, quiet: true)
+          elapsed = (Time.now - t_start).round(1)
+          results << { tool: t[:tool], name: t[:name], ok: ok, duration: elapsed }
+
+          # Clear progress line; print persistent result row
+          icon = ok ? UI::ICON[:pass] : UI::ICON[:fail]
+          badge = UI.tool_badge(t[:tool])
+          result_line = "  #{icon} #{badge} #{t[:name].truncate(38).ljust(40)} #{elapsed}s"
+          puts "\r#{result_line.ljust(w)}"
+        end
+
+        # Final progress bar at 100%
+        bar = UI::C.green("█" * PROGRESS_BAR_WIDTH)
+        puts "  [#{bar}] #{total}/#{total} 100%"
+        puts ""
+      else
+        # ── Verbose mode ───────────────────────────────────────────────────
+        all_tests.each do |t|
+          UI.section("#{UI.tool_badge(t[:tool])} #{t[:name]}")
+          t_start = Time.now
+          ok      = Runners.for(t[:tool]).run(t[:file], background:)
+          elapsed = (Time.now - t_start).round(1)
+          results << { tool: t[:tool], name: t[:name], ok: ok, duration: elapsed }
+        end
+      end
+
+      total_elapsed = (Time.now - overall_start).round(1)
+      passed        = results.count { |r| r[:ok] }
+      failed        = results.count { |r| !r[:ok] }
+
+      UI.header("Run All — Complete")
+      rows = results.map do |r|
+        icon = r[:ok] ? UI::ICON[:pass] : UI::ICON[:fail]
+        [UI.tool_badge(r[:tool]), r[:name], "#{r[:duration]}s", icon]
+      end
+      UI.table(["Tool", "Test", "Duration", "Result"], rows)
+
+      puts ""
+      UI.success("Passed: #{passed} / #{results.size}  (total time: #{total_elapsed}s)")
+      UI.error("Failed: #{failed}") if failed > 0
+      puts ""
+      UI.info("Results in: #{Config.output_dir}")
+      UI.dim("  Run: strester report  to generate a full report")
+      exit 1 if failed > 0
+    end
+  end
+
+  # ── monitor ──────────────────────────────────────────────────────────────────
+  module Monitor
+    REFRESH = 2
+
+    def self.run
+      trap("INT") { UI.clear_screen; puts "\n  Monitor stopped."; exit 0 }
+      puts UI::C.dim("  Press Ctrl+C to exit")
+
+      loop do
+        UI.clear_screen
+        UI.header("strester monitor  #{Time.now.strftime("%-d %b %Y  %H:%M:%S")}")
+        State.purge!
+        procs = State.live_processes
+
+        if procs.empty?
+          UI.section("No tests running")
+          UI.dim("  Start tests with: strester run <file> --bg")
+          UI.dim("  Or run a folder:  strester run folder <folder> --bg")
+        else
+          UI.section("Running Tests (#{procs.size})")
+          rows = procs.map do |p|
+            elapsed = begin
+              secs = Time.now - Time.parse(p["started_at"])
+              secs >= 60 ? "#{(secs / 60).round(1)}m" : "#{secs.round(0)}s"
+            rescue
+              "?"
+            end
+            [
+              p["pid"].to_s,
+              UI.tool_badge(p["tool"].to_sym),
+              p["label"].to_s.truncate(45),
+              elapsed,
+              UI::C.green("● running"),
+            ]
+          end
+          UI.table(["PID", "Tool", "Label", "Elapsed", "Status"], rows)
+
+          # Tail recent log output for first 3 processes
+          UI.section("Recent Log Output")
+          procs.first(3).each do |p|
+            log = p["log"]
+            next unless log && File.exist?(log)
+            puts "  " + UI::C.bold(File.basename(log)) + ":"
+            File.readlines(log).last(4).each { |l| puts "    " + UI::C.dim(l.chomp.strip_ansi.truncate(100)) }
+          end
+        end
+
+        print UI::C.dim("\n  Refreshing every #{REFRESH}s (Ctrl+C to exit)…")
+        $stdout.flush
+        sleep REFRESH
+      end
+    end
+  end
+
+  # ── list tests ───────────────────────────────────────────────────────────────
+  module List
+    def self.tests
+      UI.header("strester list tests")
+      grouped = ToolDetector.all_tests
+      total   = grouped.values.sum(&:size)
+
+      if total == 0
+        UI.warn("No test files found under #{PERF_DIR}")
+        return
+      end
+
+      grouped.each do |tool, tests|
+        next if tests.empty?
+        UI.section("#{tool.to_s.upcase} (#{tests.size})")
+        rows = tests.map { |t| [t[:name], t[:file].sub("#{PERF_DIR}/", "")] }
+        UI.table(["Name", "Path"], rows)
+      end
+
+      puts ""
+      UI.info("Total: #{total} test files across #{grouped.count { |_, v| !v.empty? }} tools")
+      UI.dim("  Run one:    strester run <name>")
+      UI.dim("  Run folder: strester run folder <folder>")
+    end
+  end
+
+  # ── stop ─────────────────────────────────────────────────────────────────────
+  module Stop
+    def self.run
+      UI.header("strester stop")
+      State.purge!
+      procs = State.live_processes
+
+      if procs.empty?
+        UI.info("No tests are currently running.")
+        return
+      end
+
+      rows = procs.map { |p| [p["pid"].to_s, UI.tool_badge(p["tool"].to_sym), p["label"].to_s.truncate(50)] }
+      UI.table(["PID", "Tool", "Label"], rows)
+
+      choices = procs.map { |p|
+        { name: "PID #{p["pid"]} — #{p["tool"]} — #{p["label"].to_s.truncate(40)}", value: p["pid"] }
+      }
+      choices << { name: "→ Stop ALL", value: :all }
+
+      selected = UI.multi_select("Select processes to stop:", choices, default: [:all])
+      return UI.info("Nothing selected.") if selected.empty?
+
+      pids = selected.include?(:all) ? procs.map { |p| p["pid"].to_i } : selected.map(&:to_i)
+
+      pids.each do |pid|
+        begin
+          Process.kill("-TERM", pid)
+          UI.success("Stopped PID #{pid}")
+        rescue Errno::ESRCH
+          UI.warn("PID #{pid} was already dead")
+        rescue Errno::EPERM => e
+          UI.error("Cannot stop PID #{pid}: #{e.message}")
+        ensure
+          State.deregister(pid)
+        end
+      end
+    end
+  end
+
+  # ── summary ──────────────────────────────────────────────────────────────────
+  module Summary
+    def self.run(version_slug = nil)
+      UI.header("strester summary")
+      cfg          = Config.load
+      results_base = File.join(REPO_ROOT, cfg.dig("output", "results_dir"))
+
+      # Resolve target results directory
+      target_dir = if version_slug
+        File.join(results_base, version_slug)
+      else
+        dirs = Dir.glob(File.join(results_base, "*/"))
+                   .map { |d| File.basename(d) }
+                   .select { |d| !d.start_with?(".") }
+                   .sort.reverse
+        if dirs.empty?
+          UI.warn("No result folders found in #{results_base}")
+          UI.info("Run tests first: strester run <file>")
+          return
+        end
+        slug = dirs.size == 1 ? dirs.first : UI.select("Select result set:", dirs)
+        File.join(results_base, slug)
+      end
+
+      unless File.directory?(target_dir)
+        UI.error("Results directory not found: #{target_dir}")
+        return
+      end
+
+      slug = File.basename(target_dir)
+      UI.section("#{slug}")
+      puts "  #{UI::C.dim("path:")} #{target_dir}"
+
+      lines = []  # collected for the text summary file
+      lines << banner("PERFORMANCE TEST SUMMARY — #{slug}")
+      lines << "Generated : #{Time.now.strftime("%-d %b %Y %H:%M:%S %Z")}"
+      lines << "Results   : #{target_dir}"
+      lines << ""
+
+      # ── k6 ────────────────────────────────────────────────────────────────
+      k6_summaries = Dir.glob(File.join(target_dir, "k6", "*-summary.json")).sort
+      UI.section("k6 Load Tests (#{k6_summaries.size} scenarios)")
+      lines << sep("k6 Load Tests")
+
+      if k6_summaries.empty?
+        UI.dim("  No k6 results found.")
+        lines << "  (no results)"
+      else
+        k6_rows = []
+        k6_summaries.each do |f|
+          name = File.basename(f).sub(/-\d{8}-\d{6}-summary\.json$/, "")
+          begin
+            data    = JSON.parse(File.read(f))
+            dur     = data.dig("metrics", "http_req_duration", "values") || {}
+            p95     = dur["p(95)"]   ? "#{dur["p(95)"].round(0)} ms"  : "N/A"
+            p99     = dur["p(99)"]   ? "#{dur["p(99)"].round(0)} ms"  : "N/A"
+            avg     = dur["avg"]     ? "#{dur["avg"].round(0)} ms"    : "N/A"
+            err_val = data.dig("metrics", "http_req_failed", "values", "rate")
+            errors  = err_val ? "#{(err_val * 100).round(2)}%" : "0%"
+            # k6 marks failed thresholds in the root_group checks; approximate from check passes
+            checks = data.dig("root_group", "checks") || []
+            pass   = checks.empty? || checks.all? { |c| c["fails"].to_i == 0 }
+            status = pass ? UI::C.green("PASS") : UI::C.red("FAIL")
+            k6_rows << [name.truncate(32), p95, p99, avg, errors, status]
+            lines << "  #{pass ? "PASS" : "FAIL"}  #{name.ljust(34)} p95=#{p95}  p99=#{p99}  avg=#{avg}  err=#{errors}"
+          rescue JSON::ParserError
+            k6_rows << [name.truncate(32), "err", "err", "err", "err", UI::C.yellow("PARSE ERR")]
+            lines << "  PARSE_ERR  #{name}"
+          end
+        end
+        UI.table(["Scenario", "p95", "p99", "Avg", "Errors", "Status"], k6_rows)
+      end
+
+      # ── Playwright ────────────────────────────────────────────────────────
+      pw_files = Dir.glob(File.join(target_dir, "playwright", "playwright-results-*.json")).sort
+      UI.section("Playwright UI Tests (#{pw_files.size} result files)")
+      lines << sep("Playwright UI Tests") << ""
+
+      if pw_files.empty?
+        UI.dim("  No Playwright results found.")
+        lines << "  (no results)"
+      else
+        pw_files.last(1).each do |f|
+          begin
+            data  = JSON.parse(File.read(f))
+            stats = data["stats"] || {}
+            pass  = stats["expected"].to_i
+            fail_ = stats["unexpected"].to_i
+            skip  = stats["skipped"].to_i
+            total = pass + fail_ + skip
+            line  = "  Total: #{total}  Pass: #{pass}  Fail: #{fail_}  Skip: #{skip}"
+            puts "  " + UI::C.bold("Totals:") + "  " +
+                 UI::C.green("✅ #{pass} passed") + "  " +
+                 (fail_ > 0 ? UI::C.red("❌ #{fail_} failed") : UI::C.dim("0 failed")) + "  " +
+                 UI::C.dim("#{skip} skipped")
+            lines << line
+            if fail_ > 0
+              UI.section("  Failed Specs")
+              lines << "  Failed:"
+              (data["suites"] || []).each do |suite|
+                (suite["specs"] || []).each do |spec|
+                  next unless (spec["tests"] || []).any? { |t| t["status"] == "unexpected" }
+                  puts "    ❌ #{spec["title"]}"
+                  lines << "    FAIL  #{spec["title"]}"
+                end
+              end
+            end
+          rescue JSON::ParserError
+            UI.warn("Could not parse #{File.basename(f)}")
+          end
+        end
+      end
+
+      # ── Cypress ───────────────────────────────────────────────────────────
+      cy_files = Dir.glob(File.join(target_dir, "cypress", "cypress-results-*.json")).sort
+      if cy_files.any?
+        UI.section("Cypress Tests (#{cy_files.size} result files)")
+        lines << sep("Cypress Tests")
+        cy_files.each do |f|
+          begin
+            data = JSON.parse(File.read(f))
+            passes   = data.dig("stats", "passes")   || data["passes"]   || 0
+            failures = data.dig("stats", "failures") || data["failures"] || 0
+            status   = failures.to_i > 0 ? UI::C.red("❌ FAIL") : UI::C.green("✅ PASS")
+            name = File.basename(f).sub(/-\d{8}-\d{6}\.json$/, "")
+            puts "  #{status}  #{name}  (#{passes} pass, #{failures} fail)"
+            lines << "  #{failures.to_i > 0 ? "FAIL" : "PASS"}  #{name}  passes=#{passes}  failures=#{failures}"
+          rescue JSON::ParserError
+            UI.warn("Could not parse #{File.basename(f)}")
+          end
+        end
+      end
+
+      # ── Lighthouse ────────────────────────────────────────────────────────
+      lh_files = Dir.glob(File.join(target_dir, "lighthouse", "lhr-*.json")).sort +
+                 Dir.glob(File.join(target_dir, "lighthouse", "*.report.json")).sort
+      if lh_files.any?
+        UI.section("Lighthouse Reports (#{lh_files.size})")
+        lines << sep("Lighthouse")
+        lh_files.each do |f|
+          begin
+            data = JSON.parse(File.read(f))
+            cats = data["categories"] || {}
+            row  = cats.map { |k, c| "#{k}: #{(c["score"].to_f * 100).round}" }.join("  ")
+            url  = data.dig("finalUrl") || data.dig("requestedUrl") || "?"
+            puts "  #{url.truncate(50)}: #{row}"
+            lines << "  #{url}  #{row}"
+          rescue JSON::ParserError
+            UI.warn("Could not parse #{File.basename(f)}")
+          end
+        end
+      end
+
+      # ── Ruby scripts ──────────────────────────────────────────────────────
+      rb_logs = Dir.glob(File.join(target_dir, "ruby", "*.log")).sort
+      if rb_logs.any?
+        UI.section("Ruby Script Results (#{rb_logs.size})")
+        lines << sep("Ruby Scripts")
+        rb_logs.each do |f|
+          text    = File.read(f)
+          passed  = text.match?(/PASSED|✅/)
+          failed  = text.match?(/FAILED|❌|abort/)
+          status  = failed ? UI::C.red("FAIL") : (passed ? UI::C.green("PASS") : UI::C.yellow("?"))
+          name    = File.basename(f, ".log").sub(/-\d{8}-\d{6}$/, "")
+          last    = text.lines.last&.chomp.to_s.strip_ansi.truncate(60)
+          puts "  #{status}  #{name.ljust(32)} #{UI::C.dim(last)}"
+          lines << "  #{failed ? "FAIL" : (passed ? "PASS" : "?")}  #{name.ljust(32)} #{last}"
+        end
+      end
+
+      # ── run-summary.txt (from run-all.sh) ─────────────────────────────────
+      run_summary = File.join(target_dir, "run-summary.txt")
+      if File.exist?(run_summary)
+        UI.section("Wrapper Run Summary")
+        content = File.read(run_summary)
+        puts content
+        lines << sep("run-all.sh summary") << content
+      end
+
+      lines << banner("END OF REPORT")
+
+      # Write the summary file
+      report_file = File.join(target_dir, "strester-summary-#{Time.now.strftime("%Y%m%d-%H%M%S")}.txt")
+      File.write(report_file, lines.join("\n"))
+      puts ""
+      UI.success("Summary written to: #{report_file}")
+      UI.dim("  Tip: cat #{report_file} | pbcopy  and paste into ChatGPT / Claude for analysis")
+    end
+
+    private
+
+    def self.banner(t)
+      "=" * 80 + "\n#{t}\n" + "=" * 80
+    end
+
+    def self.sep(t)
+      "\n─── #{t} " + ("─" * [72 - t.length, 4].max)
+    end
+  end
+
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parsers — tool-specific result file parsers
+# Each returns a structured Hash ready for JSON serialisation.
+# ─────────────────────────────────────────────────────────────────────────────
+
+module Parsers
+  def self.safe_json(path)
+    JSON.parse(File.read(path))
+  rescue JSON::ParserError => e
+    { "_parse_error" => e.message }
+  rescue Errno::ENOENT => e
+    { "_parse_error" => "File not found: #{e.message}" }
+  end
+
+  def self.ms(v) = v ? v.round(3) : nil
+
+  # ── K6 ──────────────────────────────────────────────────────────────────────
+  module K6
+    def self.parse(tool_dir)
+      result = { "tool" => "k6", "scenarios" => [], "parse_errors" => [], "files_parsed" => [] }
+      return result unless File.directory?(tool_dir)
+
+      Dir.glob(File.join(tool_dir, "*-summary.json")).sort.each do |f|
+        result["files_parsed"] << File.basename(f)
+        raw = Parsers.safe_json(f)
+        if raw["_parse_error"]
+          result["parse_errors"] << { "file" => File.basename(f), "error" => raw["_parse_error"] }
+          next
+        end
+
+        name      = File.basename(f).sub(/-\d{8}-\d{6}-summary\.json$/, "")
+        ts        = File.basename(f)[/(\d{8}-\d{6})-summary/, 1]
+        metrics   = raw["metrics"] || {}
+
+        # k6 summary JSON stores flat hashes OR {values:{}} depending on version
+        def_val = ->(key) { (metrics[key].is_a?(Hash) && metrics[key].key?("values") ? metrics[key]["values"] : metrics[key]) || {} }
+
+        dur    = def_val.call("http_req_duration")
+        reqs   = def_val.call("http_reqs")
+        failed = def_val.call("http_req_failed")
+        vus    = def_val.call("vus_max")
+
+        # Thresholds: {metric => {expr => false}} — false means BREACHED
+        thresholds = {}
+        metrics.each do |mname, mdata|
+          next unless mdata.is_a?(Hash)
+          (mdata["thresholds"] || {}).each do |expr, breached|
+            thresholds[mname] ||= {}
+            thresholds[mname][expr] = breached ? "fail" : "pass"
+          end
+        end
+
+        # Checks: root_group.checks is a Hash in newer k6
+        checks_raw = raw.dig("root_group", "checks") || {}
+        checks_raw = checks_raw.values if checks_raw.is_a?(Hash)
+        checks = Array(checks_raw).map do |c|
+          total = c["passes"].to_i + c["fails"].to_i
+          {
+            "name"      => c["name"],
+            "passes"    => c["passes"].to_i,
+            "fails"     => c["fails"].to_i,
+            "pass_rate" => total > 0 ? (c["passes"].to_f / total * 100).round(2) : 0.0,
+          }
+        end
+
+        # Custom metrics (non-standard)
+        std = %w[http_req_duration http_req_waiting http_req_blocked http_req_connecting
+                 http_req_sending http_req_receiving http_req_tls_handshaking
+                 http_req_failed http_req_duration{ http_reqs data_sent data_received
+                 vus vus_max iterations iteration_duration checks]
+        custom = {}
+        metrics.each do |k, v|
+          next if std.any? { |s| k.start_with?(s) }
+          vals = v.is_a?(Hash) ? (v["values"] || v) : {}
+          entry = {
+            "avg" => Parsers.ms(vals["avg"]), "p95" => Parsers.ms(vals["p(95)"]),
+            "max" => Parsers.ms(vals["max"]), "count" => vals["count"], "rate" => vals["rate"],
+          }.compact
+          custom[k] = entry unless entry.empty?
+        end
+
+        threshold_status = thresholds.values.all? { |t| t.values.all? { |v| v == "pass" } }
+        check_status     = checks.all? { |c| c["fails"] == 0 }
+
+        result["scenarios"] << {
+          "name"              => name,
+          "timestamp"         => ts,
+          "status"            => (threshold_status && check_status) ? "pass" : "fail",
+          "http_req_duration" => {
+            "avg" => Parsers.ms(dur["avg"]), "min" => Parsers.ms(dur["min"]),
+            "med" => Parsers.ms(dur["med"]), "p90" => Parsers.ms(dur["p(90)"]),
+            "p95" => Parsers.ms(dur["p(95)"]), "p99" => Parsers.ms(dur["p(99)"]),
+            "max" => Parsers.ms(dur["max"]),
+          },
+          "requests"          => { "count" => reqs["count"].to_i, "rate" => reqs["rate"]&.round(3) },
+          "error_rate_pct"    => failed["value"] ? (failed["value"] * 100).round(4) : 0.0,
+          "peak_vus"          => vus["max"].to_i,
+          "thresholds"        => thresholds,
+          "checks"            => checks,
+          "custom_metrics"    => custom,
+        }.tap { |s| s.delete("custom_metrics") if s["custom_metrics"].empty? }
+      end
+
+      pass  = result["scenarios"].count { |s| s["status"] == "pass" }
+      fail_ = result["scenarios"].count { |s| s["status"] == "fail" }
+      result["totals"] = { "scenarios" => result["scenarios"].size, "pass" => pass, "fail" => fail_,
+                           "status" => fail_ > 0 ? "fail" : (pass > 0 ? "pass" : "no_data") }
+      result
+    end
+  end
+
+  # ── Playwright ───────────────────────────────────────────────────────────────
+  module Playwright
+    def self.parse(tool_dir)
+      result = { "tool" => "playwright", "runs" => [], "parse_errors" => [], "files_parsed" => [] }
+      return result unless File.directory?(tool_dir)
+
+      files = Dir.glob(File.join(tool_dir, "playwright-results-*.json")).sort
+      files.each do |f|
+        result["files_parsed"] << File.basename(f)
+        raw = Parsers.safe_json(f)
+        if raw["_parse_error"]
+          result["parse_errors"] << { "file" => File.basename(f), "error" => raw["_parse_error"] }
+          next
+        end
+
+        ts    = File.basename(f)[/playwright-results-(\d{8}-\d{6})\.json/, 1]
+        stats = raw["stats"] || {}
+        tests = []
+        extract_tests(raw["suites"] || [], tests)
+
+        result["runs"] << {
+          "file"      => File.basename(f),
+          "timestamp" => ts,
+          "stats"     => {
+            "total"       => stats["expected"].to_i + stats["unexpected"].to_i +
+                             stats["skipped"].to_i + stats["flaky"].to_i,
+            "passed"      => stats["expected"].to_i,
+            "failed"      => stats["unexpected"].to_i,
+            "skipped"     => stats["skipped"].to_i,
+            "flaky"       => stats["flaky"].to_i,
+            "duration_ms" => stats["duration"]&.round(0),
+            "start_time"  => stats["startTime"],
+          },
+          "tests" => tests,
+        }
+      end
+
+      latest = result["runs"].last
+      if latest
+        s = latest["stats"]
+        result["totals"] = {
+          "runs" => result["runs"].size, "tests" => s["total"],
+          "passed" => s["passed"], "failed" => s["failed"], "skipped" => s["skipped"],
+          "status" => s["failed"].to_i > 0 ? "fail" : (s["passed"].to_i > 0 ? "pass" : "no_data"),
+        }
+      else
+        result["totals"] = { "runs" => 0, "tests" => 0, "passed" => 0, "failed" => 0,
+                             "skipped" => 0, "status" => "no_data" }
+      end
+      result
+    end
+
+    def self.extract_tests(suites, out, parent = nil)
+      return unless suites.is_a?(Array)
+      suites.each do |suite|
+        title = [parent, suite["title"]].compact.join(" › ")
+        extract_tests(suite["suites"] || [], out, title)
+        (suite["specs"] || []).each do |spec|
+          (spec["tests"] || []).each do |t|
+            r     = (t["results"] || []).first || {}
+            err   = (r["errors"] || []).first&.dig("message")
+            err   = err&.lines&.first&.strip&.truncate(200) if err
+            out << {
+              "suite"       => title,
+              "title"       => spec["title"],
+              "status"      => t["status"],
+              "duration_ms" => r["duration"],
+              "retry"       => r["retry"].to_i,
+              "error"       => err,
+            }.compact
+          end
+        end
+      end
+    end
+  end
+
+  # ── Cypress ──────────────────────────────────────────────────────────────────
+  module Cypress
+    def self.parse(tool_dir)
+      result = { "tool" => "cypress", "runs" => [], "parse_errors" => [], "files_parsed" => [] }
+      return result unless File.directory?(tool_dir)
+
+      Dir.glob(File.join(tool_dir, "cypress-results-*.json")).sort.each do |f|
+        result["files_parsed"] << File.basename(f)
+        raw = Parsers.safe_json(f)
+        if raw["_parse_error"]
+          result["parse_errors"] << { "file" => File.basename(f), "error" => raw["_parse_error"] }
+          next
+        end
+
+        ts    = File.basename(f)[/cypress-results-(\d{8}-\d{6})\.json/, 1]
+        stats = raw["stats"] || {}
+        tests = []
+        (raw["results"] || []).each do |res|
+          suite = res["fullFile"] || res["file"] || "unknown"
+          (res["suites"] || []).each do |s|
+            (s["tests"] || []).each do |t|
+              tests << {
+                "suite"       => suite,
+                "title"       => t["fullTitle"] || t["title"],
+                "status"      => t["state"],
+                "duration_ms" => t["duration"],
+                "error"       => t.dig("err", "message")&.truncate(200),
+              }.compact
+            end
+          end
+        end
+
+        result["runs"] << {
+          "file"      => File.basename(f),
+          "timestamp" => ts,
+          "stats"     => {
+            "total"       => stats["tests"].to_i,
+            "passed"      => stats["passes"].to_i,
+            "failed"      => stats["failures"].to_i,
+            "pending"     => stats["pending"].to_i,
+            "duration_ms" => stats["duration"],
+            "start_time"  => stats["start"],
+          },
+          "tests" => tests,
+        }
+      end
+
+      latest = result["runs"].last
+      if latest
+        s = latest["stats"]
+        result["totals"] = {
+          "runs" => result["runs"].size, "tests" => s["total"],
+          "passed" => s["passed"], "failed" => s["failed"], "pending" => s["pending"],
+          "status" => s["failed"].to_i > 0 ? "fail" : (s["passed"].to_i > 0 ? "pass" : "no_data"),
+        }
+      else
+        result["totals"] = { "runs" => 0, "tests" => 0, "passed" => 0, "failed" => 0,
+                             "status" => "no_data" }
+      end
+      result
+    end
+  end
+
+  # ── Lighthouse ───────────────────────────────────────────────────────────────
+  module Lighthouse
+    def self.parse(tool_dir)
+      result = { "tool" => "lighthouse", "reports" => [], "parse_errors" => [], "files_parsed" => [] }
+      return result unless File.directory?(tool_dir)
+
+      files = (Dir.glob(File.join(tool_dir, "lhr-*.json")) +
+               Dir.glob(File.join(tool_dir, "*.report.json"))).uniq.sort
+      files.each do |f|
+        result["files_parsed"] << File.basename(f)
+        raw = Parsers.safe_json(f)
+        if raw["_parse_error"]
+          result["parse_errors"] << { "file" => File.basename(f), "error" => raw["_parse_error"] }
+          next
+        end
+
+        url  = raw["finalUrl"] || raw["requestedUrl"] || "?"
+        cats = (raw["categories"] || {}).transform_values do |c|
+          { "title" => c["title"], "score" => c["score"] ? (c["score"] * 100).round : nil }
+        end
+        cwv_ids = %w[first-contentful-paint largest-contentful-paint
+                     total-blocking-time cumulative-layout-shift speed-index interactive]
+        cwv = (raw["audits"] || {}).slice(*cwv_ids).map do |k, a|
+          { "id" => k, "title" => a["title"],
+            "display_value" => a["displayValue"],
+            "score" => a["score"] ? (a["score"] * 100).round : nil }
+        end
+
+        result["reports"] << {
+          "file"            => File.basename(f),
+          "url"             => url,
+          "fetch_time"      => raw["fetchTime"],
+          "categories"      => cats,
+          "core_web_vitals" => cwv,
+          "status"          => cats.values.all? { |c| c["score"].to_i >= 50 } ? "pass" : "fail",
+        }
+      end
+
+      result["totals"] = {
+        "reports" => result["reports"].size,
+        "pass"    => result["reports"].count { |r| r["status"] == "pass" },
+        "fail"    => result["reports"].count { |r| r["status"] == "fail" },
+      }
+      result
+    end
+  end
+
+  # ── Ruby ─────────────────────────────────────────────────────────────────────
+  module Ruby
+    def self.parse(tool_dir)
+      result = { "tool" => "ruby", "scripts" => [], "parse_errors" => [], "files_parsed" => [] }
+      return result unless File.directory?(tool_dir)
+
+      Dir.glob(File.join(tool_dir, "*.log")).sort.each do |f|
+        result["files_parsed"] << File.basename(f)
+        text   = File.read(f) rescue ""
+        passed = text.match?(/PASSED|✅/)
+        failed = text.match?(/FAILED|❌|abort/)
+        result["scripts"] << {
+          "name"      => File.basename(f, ".log").sub(/-\d{8}-\d{6}$/, ""),
+          "file"      => File.basename(f),
+          "status"    => failed ? "fail" : (passed ? "pass" : "unknown"),
+          "last_line" => text.lines.last&.chomp.to_s.strip_ansi.truncate(200),
+        }
+      end
+
+      pass  = result["scripts"].count { |s| s["status"] == "pass" }
+      fail_ = result["scripts"].count { |s| s["status"] == "fail" }
+      result["totals"] = { "scripts" => result["scripts"].size, "pass" => pass, "fail" => fail_,
+                           "status" => fail_ > 0 ? "fail" : (pass > 0 ? "pass" : "no_data") }
+      result
+    end
+  end
+end
+
+module Commands
+
+  # ── report ──────────────────────────────────────────────────────────────────
+  # Parses all tool output files → combined summary JSON + detailed TXT report.
+  module Report
+    WIDTH     = 80
+    BAR_WIDTH = 30
+
+    ICONS = {
+      pass:      "✅",
+      fail:      "❌",
+      warn:      "⚠️ ",
+      skip:      "⏭️ ",
+      info:      "ℹ️ ",
+      k6:        "🔥",
+      playwright:"🎭",
+      cypress:   "🌲",
+      lighthouse:"🏔️ ",
+      ruby:      "💎",
+      log:       "📄",
+      timing:    "⏱️ ",
+      chart:     "📊",
+      web:       "🌐",
+      summary:   "📋",
+      folder:    "📁",
+      target:    "🎯",
+    }.freeze
+
+    def self.run(version_slug = nil)
+      cfg          = Config.load
+      results_base = File.join(REPO_ROOT, cfg.dig("output", "results_dir"))
+
+      target_dir = if version_slug
+        File.join(results_base, version_slug)
+      else
+        dirs = Dir.glob(File.join(results_base, "*/"))
+                   .map { |d| File.basename(d) }
+                   .reject { |d| d.start_with?(".") }
+                   .sort.reverse
+        if dirs.empty?
+          UI.warn("No result folders found in #{results_base}")
+          UI.info("Run tests first: strester run <file>")
+          return
+        end
+        slug = dirs.size == 1 ? dirs.first : UI.select("Select result set:", dirs)
+        File.join(results_base, slug)
+      end
+
+      unless File.directory?(target_dir)
+        UI.error("Results directory not found: #{target_dir}")
+        return
+      end
+
+      slug      = File.basename(target_dir)
+      generated = Time.now.strftime("%-d %b %Y  %H:%M:%S %Z")
+      ts_stamp  = Time.now.strftime("%Y%m%d-%H%M%S")
+
+      UI.header("strester report — #{slug}")
+      UI.spinner("Parsing result files…") {} rescue nil
+
+      # ── Run all parsers ────────────────────────────────────────────────────
+      parsed = {
+        k6:         Parsers::K6.parse(File.join(target_dir, "k6")),
+        playwright: Parsers::Playwright.parse(File.join(target_dir, "playwright")),
+        cypress:    Parsers::Cypress.parse(File.join(target_dir, "cypress")),
+        lighthouse: Parsers::Lighthouse.parse(File.join(target_dir, "lighthouse")),
+        ruby:       Parsers::Ruby.parse(File.join(target_dir, "ruby")),
+      }
+
+      # ── Build summary JSON ─────────────────────────────────────────────────
+      overall_status = parsed.values.any? { |p| (p.dig("totals", "status") || "no_data") == "fail" } ? "fail" : "pass"
+
+      summary = {
+        "meta" => {
+          "generated"   => generated,
+          "slug"        => slug,
+          "target_url"  => cfg.dig("target", "base_url"),
+          "results_dir" => target_dir,
+          "status"      => overall_status,
+        },
+        "totals" => {
+          "overall_status" => overall_status,
+          "by_tool"        => parsed.transform_values { |p| p["totals"] },
+        },
+        "tools" => parsed.transform_keys(&:to_s),
+      }
+
+      json_file = File.join(target_dir, "report-#{ts_stamp}.json")
+      File.write(json_file, JSON.pretty_generate(summary))
+      UI.success("JSON report: #{json_file}")
+
+      # ── Build TXT report from parsed data ─────────────────────────────────
+      lines = []
+      lines << hdr("#{ICONS[:chart]}  PERFORMANCE TEST REPORT — #{slug}")
+      lines << field("Generated",      generated)
+      lines << field("#{ICONS[:target]} Target", cfg.dig("target", "base_url"))
+      lines << field("#{ICONS[:folder]} Results", target_dir)
+      lines << field("Status",         overall_status == "pass" ? "#{ICONS[:pass]} PASS" : "#{ICONS[:fail]} FAIL")
+      lines << ""
+
+      # Overall breakdown table
+      lines << sec("#{ICONS[:summary]}  Overall Breakdown")
+      lines << ""
+      lines << "  #{"Tool".ljust(14)} #{"Status".ljust(10)} Details"
+      lines << "  " + "─" * 60
+      parsed.each do |tool, data|
+        t      = data["totals"] || {}
+        status = t["status"] || "no_data"
+        icon   = status == "pass" ? ICONS[:pass] : (status == "fail" ? ICONS[:fail] : ICONS[:warn])
+        detail = case tool
+                 when :k6
+                   "#{t["scenarios"].to_i} scenario(s)  pass=#{t["pass"]}  fail=#{t["fail"]}"
+                 when :playwright, :cypress
+                   "#{t["runs"].to_i} run(s)  tests=#{t["tests"]}  ✅#{t["passed"]}  ❌#{t["failed"]}"
+                 when :lighthouse
+                   "#{t["reports"].to_i} report(s)  pass=#{t["pass"].to_i}  fail=#{t["fail"].to_i}"
+                 when :ruby
+                   "#{t["scripts"].to_i} script(s)  pass=#{t["pass"].to_i}  fail=#{t["fail"].to_i}"
+                 end
+        lines << "  #{tool.to_s.upcase.ljust(14)} #{icon} #{status.ljust(8)}  #{detail}"
+      end
+      lines << ""
+
+      # ── k6 section ──────────────────────────────────────────────────────
+      k6 = parsed[:k6]
+      lines << sec("#{ICONS[:k6]}  k6 Load Tests  (#{k6.dig("totals","scenarios")} scenario(s))")
+
+      if k6["scenarios"].empty?
+        lines << "  (no k6 results found)"
+      else
+        k6["scenarios"].each do |s|
+          icon = s["status"] == "pass" ? ICONS[:pass] : ICONS[:fail]
+          lines << ""
+          lines << "  #{icon} #{s["name"]}  [#{s["timestamp"]}]"
+          d = s["http_req_duration"] || {}
+          lines << metric_row("avg / med / max", "#{ms_str(d["avg"])} / #{ms_str(d["med"])} / #{ms_str(d["max"])}")
+          lines << metric_row("p90 / p95 / p99", "#{ms_str(d["p90"])} / #{ms_str(d["p95"])} / #{ms_str(d["p99"])}")
+          lines << metric_row("requests",        "#{s.dig("requests","count")}  (#{s.dig("requests","rate")} req/s)")
+          lines << metric_row("error rate",      "#{s["error_rate_pct"]}%")
+          lines << metric_row("peak VUs",        s["peak_vus"].to_s)
+
+          if (s["thresholds"] || {}).any?
+            lines << ""
+            lines << "  Thresholds:"
+            s["thresholds"].each do |metric, exprs|
+              exprs.each do |expr, result|
+                icon2 = result == "pass" ? ICONS[:pass] : ICONS[:fail]
+                lines << "    #{icon2}  #{metric}: #{expr}"
+              end
+            end
+          end
+
+          if (s["checks"] || []).any?
+            lines << ""
+            lines << "  Checks:"
+            s["checks"].each do |c|
+              icon2 = c["fails"] == 0 ? ICONS[:pass] : ICONS[:fail]
+              rate  = c["pass_rate"].to_f
+              lines << "    #{icon2}  #{c["name"].to_s.ljust(38)} #{bar(rate)} #{rate}%  " \
+                       "(#{c["passes"]} ok / #{c["fails"]} fail)"
+            end
+          end
+
+          if (s["custom_metrics"] || {}).any?
+            lines << ""
+            lines << "  Custom metrics:"
+            s["custom_metrics"].each do |name, vals|
+              lines << "    #{ICONS[:timing]} #{name.ljust(30)} " \
+                       "avg=#{ms_str(vals["avg"])}  p95=#{ms_str(vals["p95"])}  max=#{ms_str(vals["max"])}"
+            end
+          end
+        end
+
+        # CSV row counts
+        Dir.glob(File.join(target_dir, "k6", "*.csv")).sort.each do |f|
+          count = (File.readlines(f).size - 1) rescue "?"
+          lines << ""
+          lines << "  #{ICONS[:log]} CSV: #{File.basename(f)}  (#{count} data rows)"
+        end
+      end
+
+      # ── Playwright section ──────────────────────────────────────────────
+      pw = parsed[:playwright]
+      lines << ""
+      lines << sec("#{ICONS[:playwright]}  Playwright  (#{pw["runs"].size} run(s), latest shown)")
+
+      if pw["runs"].empty?
+        lines << "  (no Playwright results found)"
+      else
+        latest_run = pw["runs"].last
+        s = latest_run["stats"]
+        lines << ""
+        lines << "  #{ICONS[:summary]} #{latest_run["file"]}  [#{latest_run["timestamp"]}]"
+        lines << metric_row("total / passed / failed", "#{s["total"]} / #{s["passed"]} / #{s["failed"]}")
+        lines << metric_row("skipped / flaky",         "#{s["skipped"]} / #{s["flaky"]}")
+        lines << metric_row("duration",                s["duration_ms"] ? "#{(s["duration_ms"] / 1000.0).round(1)}s" : "?")
+
+        tests = latest_run["tests"]
+        if tests.any?
+          lines << ""
+          lines << "  Tests:"
+          tests.each do |t|
+            icon = case t["status"]
+                   when "expected"   then ICONS[:pass]
+                   when "unexpected" then ICONS[:fail]
+                   when "skipped"    then ICONS[:skip]
+                   else                   ICONS[:warn]
+                   end
+            dur  = t["duration_ms"] ? "  #{t["duration_ms"]}ms" : ""
+            lines << "    #{icon}  #{t["suite"]} › #{t["title"]}#{dur}"
+            if t["error"]
+              lines << "       #{ICONS[:warn]} #{t["error"].truncate(72)}"
+            end
+          end
+        end
+
+        if pw["runs"].size > 1
+          lines << ""
+          lines << "  All runs:"
+          pw["runs"].each do |run|
+            s2   = run["stats"]
+            icon = s2["failed"].to_i > 0 ? ICONS[:fail] : ICONS[:pass]
+            lines << "    #{icon}  #{run["timestamp"]}  pass=#{s2["passed"]}  fail=#{s2["failed"]}"
+          end
+        end
+      end
+
+      # ── Cypress section ─────────────────────────────────────────────────
+      cy = parsed[:cypress]
+      if cy["runs"].any? || cy["files_parsed"].any?
+        lines << ""
+        lines << sec("#{ICONS[:cypress]}  Cypress  (#{cy["runs"].size} run(s))")
+
+        cy["runs"].each do |run|
+          s    = run["stats"]
+          icon = s["failed"].to_i > 0 ? ICONS[:fail] : ICONS[:pass]
+          lines << ""
+          lines << "  #{icon} #{run["file"]}  [#{run["timestamp"]}]"
+          lines << metric_row("total / passed / failed", "#{s["total"]} / #{s["passed"]} / #{s["failed"]}")
+          lines << metric_row("pending",                  s["pending"].to_s)
+          lines << metric_row("duration",                 s["duration_ms"] ? "#{(s["duration_ms"] / 1000.0).round(1)}s" : "?")
+
+          run["tests"].each do |t|
+            icon2 = t["status"] == "passing" ? ICONS[:pass] : (t["status"] == "pending" ? ICONS[:skip] : ICONS[:fail])
+            lines << "    #{icon2}  #{t["title"]}"
+            lines << "       #{ICONS[:warn]} #{t["error"].truncate(72)}" if t["error"]
+          end
+        end
+      end
+
+      # ── Lighthouse section ──────────────────────────────────────────────
+      lh = parsed[:lighthouse]
+      if lh["reports"].any?
+        lines << ""
+        lines << sec("#{ICONS[:lighthouse]}  Lighthouse  (#{lh["reports"].size} report(s))")
+
+        lh["reports"].each do |rep|
+          lines << ""
+          lines << "  #{ICONS[:web]} #{rep["url"]}"
+          rep["categories"].each do |_k, cat|
+            score = cat["score"].to_i
+            icon  = score >= 90 ? ICONS[:pass] : (score >= 50 ? ICONS[:warn] : ICONS[:fail])
+            lines << "    #{icon}  #{(cat["title"] || _k).ljust(24)}  #{bar(score)}  #{score}/100"
+          end
+          if rep["core_web_vitals"].any?
+            lines << ""
+            lines << "  #{ICONS[:timing]} Core Web Vitals:"
+            rep["core_web_vitals"].each do |v|
+              score = v["score"].to_i
+              icon  = score >= 90 ? ICONS[:pass] : (score >= 50 ? ICONS[:warn] : ICONS[:fail])
+              lines << "    #{icon}  #{(v["title"] || v["id"]).ljust(32)}  #{v["display_value"]}"
+            end
+          end
+        end
+      end
+
+      # ── Ruby section ────────────────────────────────────────────────────
+      rb = parsed[:ruby]
+      if rb["scripts"].any?
+        lines << ""
+        lines << sec("#{ICONS[:ruby]}  Ruby Scripts  (#{rb["scripts"].size})")
+        rb["scripts"].each do |s|
+          icon = s["status"] == "pass" ? ICONS[:pass] : (s["status"] == "fail" ? ICONS[:fail] : ICONS[:warn])
+          lines << "  #{icon}  #{s["name"]}"
+          lines << "    #{s["last_line"]}" if s["last_line"] && !s["last_line"].empty?
+        end
+      end
+
+      # ── Parse errors ────────────────────────────────────────────────────
+      all_errors = parsed.values.flat_map { |p| p["parse_errors"] }
+      if all_errors.any?
+        lines << ""
+        lines << sec("#{ICONS[:warn]}  Parse Errors  (#{all_errors.size})")
+        all_errors.each { |e| lines << "  #{ICONS[:fail]} #{e["file"]}: #{e["error"].truncate(70)}" }
+      end
+
+      lines << ""
+      lines << hdr("END OF REPORT")
+      lines << "  JSON: #{json_file}"
+
+      txt_file = File.join(target_dir, "report-#{ts_stamp}.txt")
+      File.write(txt_file, lines.join("\n") + "\n")
+
+      puts ""
+      puts File.read(txt_file)
+      puts ""
+      UI.success("TXT report:  #{txt_file}")
+      UI.dim("  Open:    open #{txt_file}")
+      UI.dim("  Copy:    cat #{txt_file} | pbcopy")
+      UI.dim("  Analyse: paste JSON report into ChatGPT / Claude for analysis")
+    end
+
+    private
+
+    def self.hdr(title)
+      eq = "=" * WIDTH
+      "#{eq}\n#{title.center(WIDTH)}\n#{eq}"
+    end
+
+    def self.sec(title)
+      pad = [WIDTH - title.length - 5, 4].max
+      "\n─── #{title} " + "─" * pad
+    end
+
+    def self.field(label, value)
+      "  #{label.ljust(14)} #{value}"
+    end
+
+    def self.metric_row(label, value)
+      "    #{label.ljust(26)} #{value}"
+    end
+
+    def self.ms_str(val)
+      val ? "#{val.round(1)}ms" : "N/A"
+    end
+
+    def self.bar(percent)
+      pct   = [[percent.to_f, 0].max, 100].min
+      fill  = (pct / 100.0 * BAR_WIDTH).round
+      empty = BAR_WIDTH - fill
+      "[" + "█" * fill + "░" * empty + "]"
+    end
+  end
+
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI — argument parsing and dispatch
+# ─────────────────────────────────────────────────────────────────────────────
+
+HELP_TEXT = <<~HELP
+  #{UI::C.bold.cyan("strester")} #{UI::C.dim("v#{STRESTER_VERSION}")} — Labguru Performance Test Runner
+
+  #{UI::C.bold("Usage:")}
+    strester #{UI::C.cyan("setup")}                       Install all supported tools
+    strester #{UI::C.cyan("run")} #{UI::C.yellow("<test-file>")}              Run a single test (tool auto-detected)
+    strester #{UI::C.cyan("run")} #{UI::C.yellow("<test-file>")} #{UI::C.dim("--bg")}        Run in background (monitor with: strester monitor)
+    strester #{UI::C.cyan("run folder")} #{UI::C.yellow("<folder>")}          Run all tests in a folder
+    strester #{UI::C.cyan("run all")}                      Run every test file across all tools
+    strester #{UI::C.cyan("monitor")}                     Live status of background tests
+    strester #{UI::C.cyan("list tests")}                  List all available test files
+    strester #{UI::C.cyan("stop")}                        Kill all running tests
+    strester #{UI::C.cyan("summary")}                     Summary of latest test run
+    strester #{UI::C.cyan("summary")} #{UI::C.yellow("Labguru-v6.41.2")}      Summary of a specific version
+    strester #{UI::C.cyan("report")}                      Detailed TXT report of all output files
+    strester #{UI::C.cyan("report")}  #{UI::C.yellow("Labguru-v6.41.2")}      Detailed report for a specific version
+    strester #{UI::C.cyan("config")}                      Show active configuration
+    strester #{UI::C.cyan("help")}                        This message
+
+  #{UI::C.bold("Tool auto-detection by file pattern:")}
+    k6/scenarios/*.js                    → #{UI.tool_badge(:k6)}
+    playwright/tests/*.spec.ts           → #{UI.tool_badge(:playwright)}
+    cypress/e2e/*.cy.js                  → #{UI.tool_badge(:cypress)}
+    lighthouse/*.{js,json}               → #{UI.tool_badge(:lighthouse)}
+    scripts/*.rb                         → #{UI.tool_badge(:ruby)}
+
+  #{UI::C.bold("Config file:")} #{CONFIG_FILE}
+
+  #{UI::C.bold("Required env vars:")}
+    PERF_TOKEN_USER_A    API token for User A (heavy operations / k6 default)
+    PERF_TOKEN_USER_B    API token for User B (cross-user tests)
+HELP
+
+module CLI
+  def self.run(argv)
+    args = argv.dup
+    cmd  = args.shift&.downcase
+
+    case cmd
+    when nil, "help", "--help", "-h"
+      puts HELP_TEXT
+
+    when "version", "--version", "-v"
+      puts "strester #{STRESTER_VERSION}"
+
+    when "setup"
+      Commands::Setup.run
+
+    when "run"
+      bg    = args.delete("--bg") || args.delete("--background")
+      quiet = args.delete("-q") || args.delete("-p") || args.delete("--quiet")
+      sub   = args.first&.downcase
+      if sub == "all"
+        Commands::Run.all(background: !!bg, quiet: !!quiet)
+      elsif sub == "folder"
+        args.shift
+        folder = args.shift or (UI.error("Usage: strester run folder <folder>"); exit 1)
+        Commands::Run.folder(folder, background: !!bg, quiet: !!quiet)
+      else
+        file = args.shift or (UI.error("Usage: strester run <test-file>"); exit 1)
+        Commands::Run.file(file, background: !!bg, quiet: !!quiet)
+      end
+
+    when "monitor"
+      Commands::Monitor.run
+
+    when "list"
+      sub = args.shift&.downcase
+      if sub == "tests"
+        Commands::List.tests
+      else
+        UI.error("Unknown sub-command. Did you mean: strester list tests")
+        exit 1
+      end
+
+    when "stop"
+      Commands::Stop.run
+
+    when "summary"
+      Commands::Summary.run(args.first)
+
+    when "report"
+      Commands::Report.run(args.first)
+
+    when "config"
+      UI.header("strester config")
+      Config.print
+
+    else
+      UI.error("Unknown command: #{cmd}")
+      puts ""
+      puts HELP_TEXT
+      exit 1
+    end
+  end
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+CLI.run(ARGV)

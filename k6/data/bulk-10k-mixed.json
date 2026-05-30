@@ -1,0 +1,82 @@
+{
+    "_comment": "Template with mixed create + update ops. k6 scenarios generate full 10K payloads dynamically.",
+    "operations": [
+        {
+            "operation_id": "op-1",
+            "action": "create",
+            "data": {
+                "smiles": "c1ccccc1",
+                "name": "Mixed-create-1"
+            }
+        },
+        {
+            "operation_id": "op-2",
+            "action": "create",
+            "data": {
+                "smiles": "CCO",
+                "name": "Mixed-create-2"
+            }
+        },
+        {
+            "operation_id": "op-3",
+            "action": "update",
+            "item_id": 1,
+            "data": {
+                "name": "Mixed-update-1"
+            }
+        },
+        {
+            "operation_id": "op-4",
+            "action": "create",
+            "data": {
+                "smiles": "CC(=O)O",
+                "name": "Mixed-create-3"
+            }
+        },
+        {
+            "operation_id": "op-5",
+            "action": "update",
+            "item_id": 2,
+            "data": {
+                "smiles": "CCCO"
+            }
+        },
+        {
+            "operation_id": "op-6",
+            "action": "create",
+            "data": {
+                "smiles": "c1ccncc1",
+                "name": "Mixed-create-4"
+            }
+        },
+        {
+            "operation_id": "op-7",
+            "action": "create",
+            "data": {
+                "smiles": "CC(=O)Oc1ccccc1C(=O)O"
+            }
+        },
+        {
+            "operation_id": "op-8",
+            "action": "update",
+            "item_id": 3,
+            "data": {
+                "name": "Mixed-update-3"
+            }
+        },
+        {
+            "operation_id": "op-9",
+            "action": "create",
+            "data": {
+                "smiles": "Nc1ccccc1"
+            }
+        },
+        {
+            "operation_id": "op-10",
+            "action": "create",
+            "data": {
+                "smiles": "Oc1ccccc1"
+            }
+        }
+    ]
+}

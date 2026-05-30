@@ -1,0 +1,13 @@
+{
+    "name": "labguru-perf-cypress",
+    "private": true,
+    "description": "Cypress functional regression tests for compound registration flows",
+    "scripts": {
+        "cy:open": "cypress open --config-file cypress.config.js",
+        "cy:run": "cypress run --config-file cypress.config.js --browser chrome",
+        "cy:run:headed": "cypress run --config-file cypress.config.js --browser chrome --headed"
+    },
+    "devDependencies": {
+        "cypress": "^13.6.0"
+    }
+}

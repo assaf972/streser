@@ -1,0 +1,13 @@
+{
+    "name": "labguru-perf-lighthouse",
+    "private": true,
+    "description": "Lighthouse CI audits for frontend rendering & bundle size regression",
+    "scripts": {
+        "lhci": "lhci autorun --config=lighthouserc.js",
+        "lhci:collect": "lhci collect --config=lighthouserc.js",
+        "lhci:assert": "lhci assert --config=lighthouserc.js"
+    },
+    "devDependencies": {
+        "@lhci/cli": "^0.13.0"
+    }
+}

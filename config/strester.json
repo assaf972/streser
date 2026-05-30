@@ -1,0 +1,24 @@
+{
+    "_comment": "Central config for all performance test tools. Edit target.version and base_url before each run.",
+    "target": {
+        "name": "Labguru",
+        "version": "v6.41.2",
+        "base_url": "http://admin.lvh.me:3000/auth/login",
+        "start_page_url": ""
+    },
+    "auth": {
+        "user_a_token_env": "PERF_TOKEN_USER_A",
+        "user_b_token_env": "PERF_TOKEN_USER_B"
+    },
+    "admin_login": {
+        "_comment": "Admin credentials. Store the password in PERF_ADMIN_PASSWORD env var — never commit passwords to source control.",
+        "email": "admin.example.com",
+        "password_env": "PERF_ADMIN_PASSWORD",
+        "login_path": "/auth/login",
+        "tenants_path": "/admin/resources/tenants"
+    },
+    "output": {
+        "format": "csv",
+        "results_dir": "perf/results"
+    }
+}

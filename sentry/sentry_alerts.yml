@@ -1,0 +1,75 @@
+# Sentry Performance Alert Rules
+# Configure in Sentry UI or via Terraform/API
+# Each alert maps to a performance requirement
+
+alerts:
+  # PR-1: Compound creation API response time
+  - name: "PR-1-API-Create p95 > 2s (standard tier)"
+    metric: transaction.duration
+    filter:
+      transaction: "Api::V1::CompoundsController#create"
+      tags.molecule_tier: "standard"
+    aggregate: p95
+    threshold: 2000ms
+    window: 1h
+    action: slack("#eng-performance")
+
+  - name: "PR-1-API-Create p95 > 5s (complex tier)"
+    metric: transaction.duration
+    filter:
+      transaction: "Api::V1::CompoundsController#create"
+      tags.molecule_tier: "complex"
+    aggregate: p95
+    threshold: 5000ms
+    window: 1h
+    action: slack("#eng-performance")
+
+  # PR-4: Chemistry pipeline job duration
+  - name: "PR-4-Single pipeline > 60s"
+    metric: transaction.duration
+    filter:
+      transaction: "CompoundChemistryPipeline"
+    aggregate: p95
+    threshold: 60000ms
+    window: 30m
+    action: slack("#eng-performance")
+
+  # PR-7: Ketcher editor Web Vitals
+  - name: "PR-7-Ready Ketcher LCP > 1.5s"
+    metric: measurements.lcp
+    filter:
+      transaction: "/compounds/new"
+    aggregate: p95
+    threshold: 1500ms
+    window: 1h
+    action: slack("#eng-frontend")
+
+  - name: "PR-7-Load Ketcher LCP > 3s (edit page)"
+    metric: measurements.lcp
+    filter:
+      transaction: "/compounds/*/edit"
+    aggregate: p95
+    threshold: 3000ms
+    window: 1h
+    action: slack("#eng-frontend")
+
+  # PR-3: Grid page load
+  - name: "PR-3-Index Grid LCP > 2s"
+    metric: measurements.lcp
+    filter:
+      transaction: "/compounds"
+    aggregate: p95
+    threshold: 2000ms
+    window: 1h
+    action: slack("#eng-frontend")
+
+  # PR-2b: Search response time
+  - name: "PR-2b Search p95 > 2s"
+    metric: transaction.duration
+    filter:
+      transaction: "Api::V1::CompoundsController#index"
+      tags.has_query: "true"
+    aggregate: p95
+    threshold: 2000ms
+    window: 1h
+    action: slack("#eng-performance")

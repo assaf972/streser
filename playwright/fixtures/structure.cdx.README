@@ -1,0 +1,4 @@
+# CDX files are binary format. This is a placeholder.
+# Generate real CDX files from ChemDraw or use:
+#   - ChemDraw to export .cdx
+#   - OpenBabel to convert: obabel -i smi -o cdx "c1ccccc1" > structure.cdx

@@ -1,0 +1,75 @@
+{
+    "_comment": "Template with 10 entries. k6 scenarios generate full 1K payloads dynamically from SMILES CSVs.",
+    "operations": [
+        {
+            "operation_id": "op-1",
+            "action": "create",
+            "data": {
+                "smiles": "c1ccccc1"
+            }
+        },
+        {
+            "operation_id": "op-2",
+            "action": "create",
+            "data": {
+                "smiles": "CCO"
+            }
+        },
+        {
+            "operation_id": "op-3",
+            "action": "create",
+            "data": {
+                "smiles": "CC(=O)O"
+            }
+        },
+        {
+            "operation_id": "op-4",
+            "action": "create",
+            "data": {
+                "smiles": "c1ccncc1"
+            }
+        },
+        {
+            "operation_id": "op-5",
+            "action": "create",
+            "data": {
+                "smiles": "CC(=O)Oc1ccccc1C(=O)O"
+            }
+        },
+        {
+            "operation_id": "op-6",
+            "action": "create",
+            "data": {
+                "smiles": "CC(C)Cc1ccc(cc1)C(C)C(=O)O"
+            }
+        },
+        {
+            "operation_id": "op-7",
+            "action": "create",
+            "data": {
+                "smiles": "Cn1c(=O)c2c(ncn2C)n(C)c1=O"
+            }
+        },
+        {
+            "operation_id": "op-8",
+            "action": "create",
+            "data": {
+                "smiles": "CC(=O)Nc1ccc(O)cc1"
+            }
+        },
+        {
+            "operation_id": "op-9",
+            "action": "create",
+            "data": {
+                "smiles": "Oc1ccccc1"
+            }
+        },
+        {
+            "operation_id": "op-10",
+            "action": "create",
+            "data": {
+                "smiles": "Nc1ccccc1"
+            }
+        }
+    ]
+}
