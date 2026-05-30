@@ -1,0 +1,1009 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>strester — User Manual</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3248;
+      --accent: #7c6af7;
+      --accent2: #4fa3e0;
+      --green: #3ecf8e;
+      --red: #f66;
+      --yellow: #f0c060;
+      --text: #c9d1e9;
+      --muted: #6b7299;
+      --code-bg: #12151f;
+      --sidebar-w: 280px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+      font-size: 15px;
+    }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      position: fixed;
+      top: 0; left: 0;
+      width: var(--sidebar-w);
+      height: 100vh;
+      overflow-y: auto;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 28px 0 40px;
+      z-index: 100;
+    }
+    #sidebar h1 {
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: .05em;
+      color: var(--accent);
+      padding: 0 24px 16px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+    #sidebar nav a {
+      display: block;
+      padding: 5px 24px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+      transition: color .15s, background .15s;
+    }
+    #sidebar nav a:hover,
+    #sidebar nav a.active {
+      color: var(--text);
+      background: var(--surface2);
+    }
+    #sidebar nav a.section {
+      color: var(--text);
+      font-weight: 600;
+      margin-top: 10px;
+      font-size: 13.5px;
+    }
+    #sidebar nav a.sub { padding-left: 36px; font-size: 12.5px; }
+
+    /* ── Main content ── */
+    #content {
+      margin-left: var(--sidebar-w);
+      padding: 48px 56px 80px;
+      max-width: 960px;
+    }
+
+    /* ── Hero ── */
+    .hero {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface);
+      padding: 36px 40px;
+      margin-bottom: 48px;
+    }
+    .hero h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+    .hero h1 span { color: var(--accent); }
+    .hero p { color: var(--muted); font-size: 15px; max-width: 620px; }
+    .badge {
+      display: inline-block;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 10px;
+      font-size: 12px;
+      color: var(--accent2);
+      margin-right: 8px;
+      margin-top: 12px;
+    }
+
+    /* ── Sections ── */
+    section { margin-bottom: 56px; scroll-margin-top: 24px; }
+    h2 {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: #fff;
+      border-bottom: 2px solid var(--accent);
+      padding-bottom: 8px;
+      margin-bottom: 20px;
+    }
+    h3 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--accent2);
+      margin: 28px 0 10px;
+    }
+    h4 { font-size: .95rem; font-weight: 600; color: var(--text); margin: 20px 0 8px; }
+    p { margin-bottom: 12px; }
+    ul, ol { padding-left: 24px; margin-bottom: 12px; }
+    li { margin-bottom: 4px; }
+    a { color: var(--accent2); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    strong { color: #fff; }
+    blockquote {
+      border-left: 3px solid var(--accent);
+      padding: 8px 16px;
+      background: var(--surface2);
+      border-radius: 0 6px 6px 0;
+      color: var(--text);
+      margin: 12px 0;
+      font-size: 13.5px;
+    }
+    hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+
+    /* ── Code ── */
+    code {
+      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 13px;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: #e2c97e;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px 20px;
+      overflow-x: auto;
+      margin: 12px 0 20px;
+    }
+    pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      color: #b8d4f0;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .comment { color: #5a6480; }
+    .kw { color: #c792ea; }
+    .str { color: #c3e88d; }
+    .num { color: #f78c6c; }
+    .key { color: #89ddff; }
+    .punct { color: var(--muted); }
+
+    /* ── Tables ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 24px;
+      font-size: 13.5px;
+    }
+    thead tr { background: var(--surface2); }
+    th {
+      text-align: left;
+      padding: 10px 14px;
+      color: var(--accent2);
+      font-weight: 600;
+      border-bottom: 2px solid var(--border);
+      white-space: nowrap;
+    }
+    td {
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: var(--surface2); }
+    td code { font-size: 12px; }
+
+    /* ── Status pills ── */
+    .pill {
+      display: inline-block;
+      border-radius: 20px;
+      padding: 2px 10px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .pill.pass  { background: rgba(62,207,142,.15); color: var(--green); border: 1px solid rgba(62,207,142,.3); }
+    .pill.fail  { background: rgba(255,102,102,.15); color: var(--red);   border: 1px solid rgba(255,102,102,.3); }
+    .pill.warn  { background: rgba(240,192,96,.15);  color: var(--yellow);border: 1px solid rgba(240,192,96,.3); }
+    .pill.nodata{ background: rgba(107,114,153,.15); color: var(--muted); border: 1px solid rgba(107,114,153,.3); }
+
+    /* ── Test results table (report section) ── */
+    .test-table thead tr { background: #1e2235; }
+    .test-table th:first-child  { border-radius: 8px 0 0 0; }
+    .test-table th:last-child   { border-radius: 0 8px 0 0; }
+    .test-table .tool-badge {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .tool-k6        { background: rgba(124,106,247,.2); color: #a89cf7; border: 1px solid rgba(124,106,247,.4); }
+    .tool-playwright{ background: rgba(79,163,224,.2);  color: #7ec4ef; border: 1px solid rgba(79,163,224,.4); }
+    .tool-cypress   { background: rgba(62,207,142,.2);  color: #6de0ac; border: 1px solid rgba(62,207,142,.4); }
+    .tool-lighthouse{ background: rgba(240,192,96,.2);  color: #f5d47a; border: 1px solid rgba(240,192,96,.4); }
+    .dur { font-family: monospace; color: var(--muted); font-size: 13px; white-space: nowrap; }
+
+    /* ── Progress bar ── */
+    .bar-wrap { width: 160px; display: inline-block; vertical-align: middle; }
+    .bar-bg { background: var(--surface2); border-radius: 4px; height: 6px; width: 100%; }
+    .bar-fill { height: 6px; border-radius: 4px; background: var(--green); }
+    .bar-fill.fail { background: var(--red); }
+
+    /* ── Callout ── */
+    .callout {
+      border-radius: 8px;
+      padding: 14px 18px;
+      margin: 14px 0 20px;
+      font-size: 13.5px;
+      border-left: 4px solid;
+    }
+    .callout.info  { background: rgba(79,163,224,.1);  border-color: var(--accent2); }
+    .callout.warn  { background: rgba(240,192,96,.1);  border-color: var(--yellow); }
+    .callout.tip   { background: rgba(62,207,142,.1);  border-color: var(--green); }
+    .callout strong{ display: block; margin-bottom: 4px; }
+
+    /* ── Icon legend ── */
+    .legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 20px; }
+    .legend-item {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 13px;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 780px) {
+      #sidebar { display: none; }
+      #content { margin-left: 0; padding: 24px 20px; }
+    }
+
+    /* ── Scroll-spy highlight ── */
+    section:target h2 { color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════ SIDEBAR ══════════════════════════════ -->
+<nav id="sidebar">
+  <h1>strester</h1>
+  <nav>
+    <a class="section" href="#quick-start">1. Quick Start</a>
+    <a class="section" href="#configuration">2. Configuration</a>
+    <a class="section" href="#env-vars">3. Environment Variables</a>
+    <a class="section" href="#commands">4. Commands Reference</a>
+    <a class="sub" href="#cmd-setup">setup</a>
+    <a class="sub" href="#cmd-run">run &lt;file&gt;</a>
+    <a class="sub" href="#cmd-run-all">run all</a>
+    <a class="sub" href="#cmd-run-folder">run folder</a>
+    <a class="sub" href="#cmd-monitor">monitor</a>
+    <a class="sub" href="#cmd-list">list tests</a>
+    <a class="sub" href="#cmd-stop">stop</a>
+    <a class="sub" href="#cmd-summary">summary</a>
+    <a class="sub" href="#cmd-report">report</a>
+    <a class="sub" href="#cmd-config">config</a>
+    <a class="section" href="#test-files">5. Test Files</a>
+    <a class="section" href="#results-dir">6. Results Directory</a>
+    <a class="section" href="#output-files">7. Output Files</a>
+    <a class="sub" href="#out-k6-csv">k6 CSV</a>
+    <a class="sub" href="#out-k6-json">k6 Summary JSON</a>
+    <a class="sub" href="#out-k6-log">k6 Log</a>
+    <a class="sub" href="#out-pw">Playwright JSON</a>
+    <a class="sub" href="#out-pw-html">Playwright HTML</a>
+    <a class="sub" href="#out-cy">Cypress JSON</a>
+    <a class="sub" href="#out-lh">Lighthouse JSON</a>
+    <a class="section" href="#report-files">8. Report Files</a>
+    <a class="sub" href="#report-txt">TXT report</a>
+    <a class="sub" href="#report-json">JSON report</a>
+    <a class="section" href="#workflows">9. Typical Workflows</a>
+    <a class="section" href="#troubleshooting">10. Troubleshooting</a>
+  </nav>
+</nav>
+
+<!-- ══════════════════════════════ CONTENT ══════════════════════════════ -->
+<main id="content">
+
+  <!-- Hero -->
+  <div class="hero">
+    <h1><span>strester</span> — User Manual</h1>
+    <p>Performance test runner for Labguru. Wraps k6, Playwright, Cypress, Lighthouse, and Ruby scripts into a single CLI, reads configuration from one central file, writes all results into versioned folders, and generates both human-readable and machine-readable reports.</p>
+    <div>
+      <span class="badge">k6</span>
+      <span class="badge">Playwright</span>
+      <span class="badge">Cypress</span>
+      <span class="badge">Lighthouse</span>
+      <span class="badge">Ruby</span>
+    </div>
+  </div>
+
+  <!-- ── 1. Quick Start ── -->
+  <section id="quick-start">
+    <h2>1. Quick Start</h2>
+    <pre><code><span class="comment"># 1. Install all required tools (first time only)</span>
+bin/strester setup
+
+<span class="comment"># 2. Set your API token</span>
+<span class="kw">export</span> PERF_TOKEN_USER_A=your_api_token_here
+
+<span class="comment"># 3. Edit the target URL and version</span>
+<span class="comment">#    perf/config/strester.json → target.base_url, target.version</span>
+
+<span class="comment"># 4. Run a single test</span>
+bin/strester run k6/scenarios/pr0-base-url-load.js
+
+<span class="comment"># 5. Run everything</span>
+bin/strester run all
+
+<span class="comment"># 6. Generate a report</span>
+bin/strester report</code></pre>
+    <p>All output lands in <code>perf/results/&lt;Name&gt;-&lt;Version&gt;/</code>.</p>
+  </section>
+
+  <!-- ── 2. Configuration ── -->
+  <section id="configuration">
+    <h2>2. Configuration</h2>
+    <p><strong>File:</strong> <code>perf/config/strester.json</code></p>
+    <pre><code>{
+  <span class="key">"target"</span>: {
+    <span class="key">"name"</span>: <span class="str">"Labguru"</span>,
+    <span class="key">"version"</span>: <span class="str">"v6.41.2"</span>,
+    <span class="key">"base_url"</span>: <span class="str">"http://admin.lvh.me:3000/auth/login"</span>,
+    <span class="key">"start_page_url"</span>: <span class="str">""</span>
+  },
+  <span class="key">"auth"</span>: {
+    <span class="key">"user_a_token_env"</span>: <span class="str">"PERF_TOKEN_USER_A"</span>,
+    <span class="key">"user_b_token_env"</span>: <span class="str">"PERF_TOKEN_USER_B"</span>
+  },
+  <span class="key">"admin_login"</span>: {
+    <span class="key">"email"</span>: <span class="str">"admin.example.com"</span>,
+    <span class="key">"password_env"</span>: <span class="str">"PERF_ADMIN_PASSWORD"</span>,
+    <span class="key">"login_path"</span>: <span class="str">"/auth/login"</span>,
+    <span class="key">"tenants_path"</span>: <span class="str">"/admin/resources/tenants"</span>
+  },
+  <span class="key">"output"</span>: {
+    <span class="key">"format"</span>: <span class="str">"csv"</span>,
+    <span class="key">"results_dir"</span>: <span class="str">"perf/results"</span>
+  }
+}</code></pre>
+
+    <table>
+      <thead><tr><th>Field</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>target.name</code></td><td>Product name — used as the results folder prefix</td></tr>
+        <tr><td><code>target.version</code></td><td>Release version — appended to the folder name (<code>Labguru-v6.41.2</code>)</td></tr>
+        <tr><td><code>target.base_url</code></td><td>Base URL all tests run against</td></tr>
+        <tr><td><code>target.start_page_url</code></td><td>Optional URL with auth token embedded for Lighthouse login</td></tr>
+        <tr><td><code>auth.user_a_token_env</code></td><td>Name of the env var that holds User A's API token</td></tr>
+        <tr><td><code>auth.user_b_token_env</code></td><td>Name of the env var that holds User B's API token</td></tr>
+        <tr><td><code>admin_login.email</code></td><td>Admin username / email for form-based login tests (PR-13)</td></tr>
+        <tr><td><code>admin_login.password_env</code></td><td>Name of the env var holding the admin password — never store the password value here</td></tr>
+        <tr><td><code>admin_login.login_path</code></td><td>Path of the login form page (default: <code>/auth/login</code>)</td></tr>
+        <tr><td><code>admin_login.tenants_path</code></td><td>Path of the admin tenants page measured by PR-13</td></tr>
+        <tr><td><code>output.format</code></td><td>k6 raw output format: <code>csv</code> (default) or <code>json</code></td></tr>
+        <tr><td><code>output.results_dir</code></td><td>Root folder for all results (relative to repo root)</td></tr>
+      </tbody>
+    </table>
+    <div class="callout warn"><strong>⚠️ Before each release test cycle</strong> update <code>target.version</code> and <code>target.base_url</code> so results land in a new versioned folder and don't overwrite previous runs.</div>
+  </section>
+
+  <!-- ── 3. Environment Variables ── -->
+  <section id="env-vars">
+    <h2>3. Environment Variables</h2>
+    <table>
+      <thead><tr><th>Variable</th><th>Required</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>PERF_TOKEN_USER_A</code></td><td>Yes</td><td>API token for the primary test user. Passed to k6 as <code>--env TOKEN</code> and to Playwright/Cypress via <code>BASE_URL</code> auth. If not set, strester will prompt you.</td></tr>
+        <tr><td><code>PERF_TOKEN_USER_B</code></td><td>Cross-user tests</td><td>API token for a second user. Used by tests that verify multi-user isolation (e.g. <code>pr8-cross-user</code>).</td></tr>
+        <tr><td><code>PERF_EMAIL</code></td><td>For Cypress</td><td>Login email for Cypress UI tests that use form-based login.</td></tr>
+        <tr><td><code>PERF_PASSWORD</code></td><td>For Cypress</td><td>Login password for Cypress UI tests.</td></tr>
+        <tr><td><code>PERF_ADMIN_EMAIL</code></td><td>For PR-13</td><td>Admin username / email for the login-to-tenants test. Defaults to the value in <code>strester.json → admin_login.email</code>.</td></tr>
+        <tr><td><code>PERF_ADMIN_PASSWORD</code></td><td>For PR-13</td><td>Admin password. <strong>Never commit this value</strong> — always pass via env var.</td></tr>
+        <tr><td><code>BASE_URL</code></td><td>Optional</td><td>Overrides <code>target.base_url</code> from config at runtime.</td></tr>
+      </tbody>
+    </table>
+    <pre><code><span class="kw">export</span> PERF_TOKEN_USER_A=abc123
+<span class="kw">export</span> PERF_TOKEN_USER_B=def456
+<span class="kw">export</span> PERF_EMAIL=tester@example.com
+<span class="kw">export</span> PERF_PASSWORD=secret
+<span class="kw">export</span> PERF_ADMIN_PASSWORD=SecurePassword123!</code></pre>
+  </section>
+
+  <!-- ── 4. Commands ── -->
+  <section id="commands">
+    <h2>4. Commands Reference</h2>
+
+    <h3 id="cmd-setup">4.1 strester setup</h3>
+    <p>Installs all required tools and scaffolds the folder tree.</p>
+    <pre><code>bin/strester setup</code></pre>
+    <p><strong>What it does:</strong></p>
+    <ul>
+      <li>Checks which tools are already installed (k6, Node.js, Playwright, Cypress, Lighthouse CI, Sentry CLI, jq)</li>
+      <li>Prompts you to select which missing tools to install</li>
+      <li>Runs the appropriate <code>brew install</code> / <code>npm install -g</code> commands</li>
+      <li>Creates any missing folders under <code>perf/</code></li>
+    </ul>
+    <div class="callout tip"><strong>Run this once</strong> on a new machine or after cloning the repo.</div>
+
+    <h3 id="cmd-run">4.2 strester run &lt;file&gt;</h3>
+    <p>Runs a single test file. The tool is auto-detected from the file path.</p>
+    <pre><code><span class="comment"># k6 API load test</span>
+bin/strester run k6/scenarios/pr0-base-url-load.js
+
+<span class="comment"># Playwright UI test</span>
+bin/strester run playwright/tests/pr0-base-url-load.spec.ts
+
+<span class="comment"># Cypress functional test</span>
+bin/strester run cypress/e2e/pr0-base-url-load.cy.js
+
+<span class="comment"># Lighthouse base URL audit (no auth)</span>
+bin/strester run lighthouse/lighthouse-base.js
+
+<span class="comment"># Lighthouse authenticated tenants audit (PR-13)</span>
+bin/strester run lighthouse/lighthouserc.js
+
+<span class="comment"># Run in quiet mode — shows spinner instead of live output</span>
+bin/strester run k6/scenarios/pr3-index.js -q
+
+<span class="comment"># Run in background (non-blocking)</span>
+bin/strester run k6/scenarios/pr3-index.js --bg</code></pre>
+
+    <table>
+      <thead><tr><th>File path pattern</th><th>Tool used</th></tr></thead>
+      <tbody>
+        <tr><td><code>k6/scenarios/*.js</code></td><td>k6</td></tr>
+        <tr><td><code>playwright/tests/*.spec.ts</code></td><td>Playwright</td></tr>
+        <tr><td><code>cypress/e2e/*.cy.js</code></td><td>Cypress</td></tr>
+        <tr><td><code>lighthouse/*.{js,json}</code></td><td>Lighthouse</td></tr>
+        <tr><td><code>scripts/*.rb</code></td><td>Ruby (via <code>rails runner</code>)</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong><code>--bg</code> flag:</strong> Spawns the test in the background and returns immediately. Use <code>strester monitor</code> to watch it and <code>strester stop</code> to kill it.</p>
+    <p><strong><code>-q</code> / <code>-p</code> / <code>--quiet</code> flag:</strong> Suppresses live test output. Shows a spinner with the test name while it runs, then prints <code>done</code> or <code>failed</code> with elapsed time. All output is still written to the log file.</p>
+
+    <h3 id="cmd-run-all">4.3 strester run all</h3>
+    <pre><code>bin/strester run all
+
+<span class="comment"># Quiet mode — live progress bar instead of per-test output</span>
+bin/strester run all -q
+
+<span class="comment"># Run all in background</span>
+bin/strester run all --bg</code></pre>
+    <p><strong>What it does:</strong></p>
+    <ol>
+      <li>Discovers all test files via <code>ToolDetector.all_tests</code></li>
+      <li>Shows a table of everything found and asks for confirmation</li>
+      <li>Runs each test sequentially, recording per-test duration</li>
+      <li>Prints a final summary table with ✅/❌ per test and total elapsed time</li>
+      <li>Exits with code 1 if any test failed</li>
+    </ol>
+    <p><strong>Normal mode example:</strong></p>
+    <pre><code>strester run all — Complete
+
+Tool         Test                        Duration   Result
+k6           pr0-base-url-load.js        62.3s      ✅
+playwright   pr0-base-url-load.spec.ts   18.1s      ❌
+cypress      pr0-base-url-load.cy.js     34.7s      ✅
+
+Passed: 2 / 3  (total time: 115.1s)
+Failed: 1</code></pre>
+    <p><strong>Quiet mode (<code>-q</code>) example:</strong></p>
+    <pre><code>  [████████████░░░░░░░░░░░░░░░░] 4/12 33%  k6: pr3-index.js  42s elapsed · ETA 86s
+
+  ✅ 🔥 k6           pr0-base-url-load.js              62.3s
+  ❌ 🎭 playwright   pr0-base-url-load.spec.ts          18.1s
+  [████████████████████████████░░] 11/12 91%  ...</code></pre>
+
+    <h3 id="cmd-run-folder">4.4 strester run folder &lt;folder&gt;</h3>
+    <pre><code>bin/strester run folder k6/scenarios
+bin/strester run folder playwright/tests
+bin/strester run folder cypress/e2e</code></pre>
+    <p>Asks for confirmation before running. Useful when you want to run all tests for a single tool without running the entire suite.</p>
+
+    <h3 id="cmd-monitor">4.5 strester monitor</h3>
+    <pre><code>bin/strester monitor</code></pre>
+    <p>Shows a live auto-refreshing view of all background tests. Displays PID, tool, label, elapsed time, and tail of the last 4 log lines. Refreshes every 2 seconds. Press <strong>Ctrl+C</strong> to exit.</p>
+
+    <h3 id="cmd-list">4.6 strester list tests</h3>
+    <pre><code>bin/strester list tests</code></pre>
+    <p>Lists every available test file grouped by tool. Useful for finding the exact path to pass to <code>strester run</code>.</p>
+
+    <h3 id="cmd-stop">4.7 strester stop</h3>
+    <pre><code>bin/strester stop</code></pre>
+    <p>Kills running background tests. Shows all running processes, lets you select which to stop (or stop all), and sends SIGTERM to the selected PIDs.</p>
+
+    <h3 id="cmd-summary">4.8 strester summary</h3>
+    <pre><code>bin/strester summary
+bin/strester summary Labguru-v6.41.2</code></pre>
+    <p>Prints a quick formatted summary and writes a <code>strester-summary-*.txt</code> file. Covers: k6 scenario tables, Playwright pass/fail totals, Cypress results, Lighthouse scores, Ruby log outcomes.</p>
+    <div class="callout info"><strong>Tip</strong> For a richer output with full per-test breakdowns and JSON export, use <code>strester report</code> instead.</div>
+
+    <h3 id="cmd-report">4.9 strester report</h3>
+    <p>The main reporting command. Parses <strong>all</strong> output files from every tool and produces two files:</p>
+    <pre><code>bin/strester report
+bin/strester report Labguru-v6.41.2</code></pre>
+    <p><strong>Produces:</strong></p>
+    <ul>
+      <li><code>report-YYYYMMDD-HHMMSS.txt</code> — human-readable with icons, tables, and ASCII bars</li>
+      <li><code>report-YYYYMMDD-HHMMSS.json</code> — machine-readable structured data</li>
+    </ul>
+    <p>See <a href="#report-files">Section 8</a> for full details.</p>
+
+    <h3 id="cmd-config">4.10 strester config</h3>
+    <pre><code>bin/strester config</code></pre>
+    <p>Prints the currently active configuration: target name/version, base URL, output directory, and whether tokens are set.</p>
+  </section>
+
+  <!-- ── 5. Test Files ── -->
+  <section id="test-files">
+    <h2>5. Test Files</h2>
+    <pre><code>perf/
+├── k6/
+│   ├── scenarios/          ← k6 load test scripts (.js)
+│   ├── helpers/            ← shared auth, checks, compounds helpers
+│   └── data/               ← CSV/JSON fixture data for bulk tests
+├── playwright/
+│   ├── tests/              ← Playwright specs (.spec.ts)
+│   └── helpers/            ← login, timing, ketcher helpers
+├── cypress/
+│   ├── e2e/                ← Cypress specs (.cy.js)
+│   └── support/            ← global commands (cy.login, etc.)
+├── lighthouse/             ← Lighthouse config files
+└── scripts/                ← Ruby utility scripts</code></pre>
+
+    <p><strong>Naming convention:</strong></p>
+    <table>
+      <thead><tr><th>Prefix</th><th>Test area</th></tr></thead>
+      <tbody>
+        <tr><td><code>pr0</code></td><td>Base URL / smoke tests</td></tr>
+        <tr><td><code>pr1</code></td><td>Compound creation (API + UI)</td></tr>
+        <tr><td><code>pr3</code></td><td>Grid / index page</td></tr>
+        <tr><td><code>pr12</code></td><td>Deletion</td></tr>
+        <tr><td><code>pr13</code></td><td>Admin login → tenants page</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>Lighthouse files</strong> in <code>perf/lighthouse/</code>:</p>
+    <table>
+      <thead><tr><th>File</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>lighthouse-base.js</code></td><td>PR-0 direct Lighthouse config — audits the base URL (no authentication)</td></tr>
+        <tr><td><code>lighthouserc.js</code></td><td>PR-13 LHCI config — audits <code>/admin/resources/tenants</code> after logging in</td></tr>
+        <tr><td><code>puppeteer-login.js</code></td><td>Shared authentication script used by <code>lighthouserc.js</code> to log in before each audit</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ── 6. Results Directory ── -->
+  <section id="results-dir">
+    <h2>6. Results Directory Structure</h2>
+    <pre><code>perf/results/
+└── Labguru-v6.41.2/
+    ├── k6/
+    │   ├── pr0-base-url-load.js-20260530-195404.csv
+    │   ├── pr0-base-url-load.js-20260530-195404-summary.json
+    │   └── pr0-base-url-load.js-20260530-195404.log
+    ├── playwright/
+    │   ├── playwright-results-20260530-195315.json
+    │   ├── pr0-base-url-load-20260530-195315.log
+    │   └── html-report/
+    ├── cypress/
+    │   ├── cypress-results-20260530-202516.json
+    │   └── pr0-base-url-load-20260530-202516.log
+    ├── lighthouse/
+    │   └── lhr-20260530-202800.json
+    ├── ruby/
+    │   └── seed_compounds-20260530-202900.log
+    ├── report-20260530-202757.txt
+    └── report-20260530-202757.json</code></pre>
+    <p><strong>Timestamp format:</strong> <code>YYYYMMDD-HHMMSS</code> — all files from the same test run share the same timestamp.</p>
+    <p>Multiple runs of the same test accumulate in the same versioned folder. This lets you compare successive runs in the report.</p>
+  </section>
+
+  <!-- ── 7. Output Files ── -->
+  <section id="output-files">
+    <h2>7. Output Files Explained</h2>
+
+    <h3 id="out-k6-csv">7.1 k6 — CSV data file</h3>
+    <p><strong>Pattern:</strong> <code>k6/&lt;scenario&gt;-&lt;timestamp&gt;.csv</code></p>
+    <p>Raw time-series data. Every HTTP request is one row.</p>
+    <table>
+      <thead><tr><th>Column</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>metric_name</code></td><td>Metric type (<code>http_req_duration</code>, <code>http_reqs</code>, etc.)</td></tr>
+        <tr><td><code>timestamp</code></td><td>Unix timestamp of the sample</td></tr>
+        <tr><td><code>metric_value</code></td><td>Value in milliseconds (for duration metrics)</td></tr>
+        <tr><td><code>status</code></td><td>HTTP response status code</td></tr>
+        <tr><td><code>url</code></td><td>Request URL</td></tr>
+        <tr><td><code>scenario</code></td><td>k6 scenario name</td></tr>
+        <tr><td><code>expected_response</code></td><td><code>true</code> if status was in the expected range</td></tr>
+      </tbody>
+    </table>
+    <p>Useful for: importing into Grafana, Excel pivot analysis, or feeding into other monitoring tools.</p>
+
+    <h3 id="out-k6-json">7.2 k6 — summary JSON</h3>
+    <p><strong>Pattern:</strong> <code>k6/&lt;scenario&gt;-&lt;timestamp&gt;-summary.json</code></p>
+    <pre><code>{
+  <span class="key">"metrics"</span>: {
+    <span class="key">"http_req_duration"</span>: {
+      <span class="key">"avg"</span>: <span class="num">43.1</span>, <span class="key">"min"</span>: <span class="num">13.4</span>, <span class="key">"med"</span>: <span class="num">40.3</span>,
+      <span class="key">"p(90)"</span>: <span class="num">69.2</span>, <span class="key">"p(95)"</span>: <span class="num">86.3</span>, <span class="key">"max"</span>: <span class="num">292.8</span>
+    },
+    <span class="key">"http_reqs"</span>: { <span class="key">"count"</span>: <span class="num">580</span>, <span class="key">"rate"</span>: <span class="num">9.56</span> },
+    <span class="key">"http_req_failed"</span>: { <span class="key">"value"</span>: <span class="num">0.0</span> }
+  }
+}</code></pre>
+    <p><strong>Key metrics to watch:</strong></p>
+    <ul>
+      <li><code>http_req_duration.p(95)</code> — 95th percentile response time</li>
+      <li><code>http_req_duration.p(99)</code> — tail latency</li>
+      <li><code>http_req_failed.value</code> — error rate as a fraction (0.05 = 5% errors)</li>
+      <li><code>http_reqs.rate</code> — requests per second throughput</li>
+    </ul>
+    <div class="callout info"><strong>Understanding thresholds:</strong> A threshold value of <code>false</code> means the threshold was <strong>breached</strong> (failed). <code>true</code> means it passed. This is k6's convention.</div>
+
+    <h3 id="out-k6-log">7.3 k6 — log file</h3>
+    <p><strong>Pattern:</strong> <code>k6/&lt;scenario&gt;-&lt;timestamp&gt;.log</code></p>
+    <p>Full terminal output from the k6 run including real-time progress, VU counts, and the end-of-run summary table.</p>
+
+    <h3 id="out-pw">7.4 Playwright — results JSON</h3>
+    <p><strong>Pattern:</strong> <code>playwright/playwright-results-&lt;timestamp&gt;.json</code></p>
+    <table>
+      <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>expected</code></td><td>Test passed</td></tr>
+        <tr><td><code>unexpected</code></td><td>Test failed</td></tr>
+        <tr><td><code>skipped</code></td><td>Test was skipped</td></tr>
+        <tr><td><code>flaky</code></td><td>Test passed on retry after initially failing</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="out-pw-html">7.5 Playwright — HTML report</h3>
+    <p><strong>Location:</strong> <code>playwright/html-report/</code></p>
+    <pre><code>open perf/results/Labguru-v6.41.2/playwright/html-report/index.html</code></pre>
+    <p>Contains screenshots, videos, and stack traces for failed tests.</p>
+
+    <h3 id="out-cy">7.6 Cypress — results JSON</h3>
+    <p><strong>Pattern:</strong> <code>cypress/cypress-results-&lt;timestamp&gt;.json</code></p>
+    <p>Mocha JSON reporter output. Test state values: <code>passing</code>, <code>failing</code>, <code>pending</code>.</p>
+
+    <h3 id="out-lh">7.7 Lighthouse — report JSON</h3>
+    <p><strong>Pattern:</strong> <code>lighthouse/lhr-&lt;timestamp&gt;.json</code></p>
+    <p><strong>Score interpretation:</strong> Scores are 0–1 (multiply by 100 for %). Lighthouse thresholds:</p>
+    <ul>
+      <li>90–100 → <span class="pill pass">Good</span></li>
+      <li>50–89  → <span class="pill warn">Needs improvement</span></li>
+      <li>0–49   → <span class="pill fail">Poor</span></li>
+    </ul>
+  </section>
+
+  <!-- ── 8. Report Files ── -->
+  <section id="report-files">
+    <h2>8. Report Files Explained</h2>
+    <p>Running <code>strester report</code> produces two files per invocation, both with the same timestamp.</p>
+
+    <!-- ── Test Results Table ── -->
+    <h3>Test Results Summary Table</h3>
+    <p>Each generated report includes a breakdown of every test that ran, grouped by tool, with its duration and pass/fail status:</p>
+
+    <table class="test-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Tool</th>
+          <th>Test Name</th>
+          <th>Duration</th>
+          <th>Status</th>
+          <th>Pass Rate</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td><span class="tool-badge tool-k6">k6</span></td>
+          <td><code>pr0-base-url-load.js</code></td>
+          <td class="dur">62.3s</td>
+          <td><span class="pill pass">✅ pass</span></td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-bg"><div class="bar-fill" style="width:100%"></div></div>
+            </div>
+            <small style="color:var(--muted)"> 100%</small>
+          </td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td><span class="tool-badge tool-k6">k6</span></td>
+          <td><code>pr1-api-create.js</code></td>
+          <td class="dur">95.1s</td>
+          <td><span class="pill pass">✅ pass</span></td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-bg"><div class="bar-fill" style="width:100%"></div></div>
+            </div>
+            <small style="color:var(--muted)"> 100%</small>
+          </td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td><span class="tool-badge tool-k6">k6</span></td>
+          <td><code>pr13-login-to-tenants.js</code></td>
+          <td class="dur">120.4s</td>
+          <td><span class="pill pass">✅ pass</span></td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-bg"><div class="bar-fill" style="width:98%"></div></div>
+            </div>
+            <small style="color:var(--muted)"> 98%</small>
+          </td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td><span class="tool-badge tool-playwright">playwright</span></td>
+          <td><code>pr0-base-url-load.spec.ts</code></td>
+          <td class="dur">18.1s</td>
+          <td><span class="pill fail">❌ fail</span></td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-bg"><div class="bar-fill fail" style="width:0%"></div></div>
+            </div>
+            <small style="color:var(--muted)"> 0%</small>
+          </td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td><span class="tool-badge tool-playwright">playwright</span></td>
+          <td><code>pr13-login-to-tenants.spec.ts</code></td>
+          <td class="dur">22.7s</td>
+          <td><span class="pill pass">✅ pass</span></td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-bg"><div class="bar-fill" style="width:100%"></div></div>
+            </div>
+            <small style="color:var(--muted)"> 100%</small>
+          </td>
+        </tr>
+        <tr>
+          <td>6</td>
+          <td><span class="tool-badge tool-cypress">cypress</span></td>
+          <td><code>pr13-login-to-tenants.cy.js</code></td>
+          <td class="dur">34.7s</td>
+          <td><span class="pill pass">✅ pass</span></td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-bg"><div class="bar-fill" style="width:100%"></div></div>
+            </div>
+            <small style="color:var(--muted)"> 100%</small>
+          </td>
+        </tr>
+        <tr>
+          <td>7</td>
+          <td><span class="tool-badge tool-lighthouse">lighthouse</span></td>
+          <td><code>lighthouserc.js</code> (3 runs)</td>
+          <td class="dur">47.2s</td>
+          <td><span class="pill pass">✅ pass</span></td>
+          <td>
+            <div class="bar-wrap">
+              <div class="bar-bg"><div class="bar-fill" style="width:87%"></div></div>
+            </div>
+            <small style="color:var(--muted)"> perf 87</small>
+          </td>
+        </tr>
+        <tr style="background: rgba(62,207,142,.04); font-weight:600;">
+          <td colspan="3" style="text-align:right; color:var(--muted); font-size:13px; padding-right:18px;">⏱️ Total</td>
+          <td class="dur">340.2s</td>
+          <td><span class="pill warn">6/7 pass</span></td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout info">
+      <strong>This table is part of both the TXT and JSON report outputs.</strong>
+      The TXT report renders it as an ASCII table with aligned columns. The JSON report includes it as a structured array under <code>tools.*</code> with <code>run_duration_s</code> per entry.
+    </div>
+
+    <h3 id="report-txt">8.1 TXT report</h3>
+    <p><strong>Pattern:</strong> <code>report-YYYYMMDD-HHMMSS.txt</code></p>
+    <pre><code>================================================================================
+                  📊  PERFORMANCE TEST REPORT — Labguru-v6.41.2
+================================================================================
+  Generated      30 May 2026  20:27:57 IDT
+  🎯 Target       http://admin.lvh.me:3000/auth/login
+  📁 Results      perf/results/Labguru-v6.41.2
+  Status         ❌ FAIL
+
+─── 📋  Overall Breakdown ──────────────────────────────────────────────────────
+
+  Tool           Status      Duration   Details
+  ────────────────────────────────────────────────────────────────────────────
+  K6             ✅ pass        62.3s   1 scenario(s)  pass=1  fail=0
+  PLAYWRIGHT     ❌ fail        18.1s   4 run(s)  tests=1  ✅0  ❌1
+  CYPRESS        ⚠️  no_data        —   0 run(s)  tests=0  ✅0  ❌0
+
+  ⏱️  Total test time:  80.4s  (1.3 min)
+
+─── 🔥  k6 Load Tests ──────────────────────────────────────────────────────────
+
+  ✅ pr0-base-url-load.js  [20260530-195404]
+    test duration              62.3s
+    avg / med / max            43.1ms / 40.3ms / 292.8ms
+    p90 / p95 / p99            69.2ms / 86.3ms / N/A
+    requests                   580  (9.557 req/s)
+    error rate                 0%
+    peak VUs                   10
+
+  Thresholds:
+    ✅  base_url_load_duration: p(95)&lt;3000
+
+  Checks:
+    ✅  status is 200 or 302  [██████████████████████████████] 100.0%
+
+─── ⏱️  END OF REPORT ─────────────────────────────────────────────────────────</code></pre>
+
+    <p><strong>Icon legend:</strong></p>
+    <div class="legend">
+      <span class="legend-item">✅ Passed / within threshold</span>
+      <span class="legend-item">❌ Failed / threshold breached</span>
+      <span class="legend-item">⚠️  Warning / no data</span>
+      <span class="legend-item">⏱️  Timing / custom metric</span>
+      <span class="legend-item"><code>[████░░░░]</code> Pass-rate bar</span>
+    </div>
+    <div class="callout tip"><strong>Quick tip:</strong> Copy the file and paste it into ChatGPT/Claude for instant analysis: <code>cat report-*.txt | pbcopy</code></div>
+
+    <h3 id="report-json">8.2 JSON report</h3>
+    <p><strong>Pattern:</strong> <code>report-YYYYMMDD-HHMMSS.json</code></p>
+    <pre><code>{
+  <span class="key">"meta"</span>: {
+    <span class="key">"generated"</span>: <span class="str">"30 May 2026  20:27:57 IDT"</span>,
+    <span class="key">"slug"</span>: <span class="str">"Labguru-v6.41.2"</span>,
+    <span class="key">"target_url"</span>: <span class="str">"http://admin.lvh.me:3000/auth/login"</span>,
+    <span class="key">"status"</span>: <span class="str">"fail"</span>,
+    <span class="key">"total_duration_s"</span>: <span class="num">80.4</span>,
+    <span class="key">"duration_by_tool_s"</span>: { <span class="key">"k6"</span>: <span class="num">62.3</span>, <span class="key">"playwright"</span>: <span class="num">18.1</span> }
+  },
+  <span class="key">"totals"</span>: {
+    <span class="key">"overall_status"</span>: <span class="str">"fail"</span>,
+    <span class="key">"by_tool"</span>: {
+      <span class="key">"k6"</span>:         { <span class="key">"scenarios"</span>: <span class="num">1</span>, <span class="key">"pass"</span>: <span class="num">1</span>, <span class="key">"fail"</span>: <span class="num">0</span>, <span class="key">"status"</span>: <span class="str">"pass"</span> },
+      <span class="key">"playwright"</span>: { <span class="key">"runs"</span>: <span class="num">4</span>, <span class="key">"tests"</span>: <span class="num">1</span>, <span class="key">"passed"</span>: <span class="num">0</span>, <span class="key">"failed"</span>: <span class="num">1</span>, <span class="key">"status"</span>: <span class="str">"fail"</span> },
+      <span class="key">"cypress"</span>:    { <span class="key">"runs"</span>: <span class="num">0</span>, <span class="key">"tests"</span>: <span class="num">0</span>, <span class="key">"status"</span>: <span class="str">"no_data"</span> }
+    }
+  },
+  <span class="key">"tools"</span>: {
+    <span class="key">"k6"</span>: {
+      <span class="key">"scenarios"</span>: [
+        {
+          <span class="key">"name"</span>: <span class="str">"pr0-base-url-load.js"</span>,
+          <span class="key">"timestamp"</span>: <span class="str">"20260530-195404"</span>,
+          <span class="key">"status"</span>: <span class="str">"pass"</span>,
+          <span class="key">"run_duration_s"</span>: <span class="num">62.3</span>,
+          <span class="key">"http_req_duration"</span>: {
+            <span class="key">"avg"</span>: <span class="num">43.078</span>, <span class="key">"p95"</span>: <span class="num">86.337</span>, <span class="key">"max"</span>: <span class="num">292.769</span>
+          }
+        }
+      ]
+    }
+  }
+}</code></pre>
+
+    <table>
+      <thead><tr><th>Status value</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>"pass"</code></td><td>All tests/thresholds passed</td></tr>
+        <tr><td><code>"fail"</code></td><td>One or more tests/thresholds failed</td></tr>
+        <tr><td><code>"no_data"</code></td><td>No result files found for this tool</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ── 9. Workflows ── -->
+  <section id="workflows">
+    <h2>9. Typical Workflows</h2>
+
+    <h3>Run the admin login → tenants test</h3>
+    <pre><code><span class="comment"># Set the admin password (never commit this)</span>
+<span class="kw">export</span> PERF_ADMIN_PASSWORD=SecurePassword123!
+
+bin/strester run k6/scenarios/pr13-login-to-tenants.js
+bin/strester run playwright/tests/pr13-login-to-tenants.spec.ts
+bin/strester run cypress/e2e/pr13-login-to-tenants.cy.js
+bin/strester run lighthouse/lighthouserc.js
+bin/strester report</code></pre>
+
+    <h3>Run a single test and inspect results</h3>
+    <pre><code><span class="kw">export</span> PERF_TOKEN_USER_A=your_token
+
+bin/strester run k6/scenarios/pr0-base-url-load.js
+bin/strester report
+open perf/results/Labguru-v6.41.2/playwright/html-report/index.html</code></pre>
+
+    <h3>Full release regression run</h3>
+    <pre><code><span class="comment"># 1. Update version in perf/config/strester.json → "version": "v6.42.0"</span>
+
+<span class="kw">export</span> PERF_TOKEN_USER_A=...
+<span class="kw">export</span> PERF_TOKEN_USER_B=...
+
+bin/strester run all
+bin/strester report
+
+<span class="comment"># Copy report for review</span>
+cat perf/results/Labguru-v6.42.0/report-*.txt | pbcopy</code></pre>
+
+    <h3>Long-running tests in background</h3>
+    <pre><code>bin/strester run k6/scenarios/pr3-index.js --bg
+bin/strester monitor
+bin/strester report</code></pre>
+
+    <h3>Compare two versions</h3>
+    <pre><code>bin/strester report Labguru-v6.41.0
+bin/strester report Labguru-v6.42.0
+
+diff perf/results/Labguru-v6.41.0/report-*.json \
+     perf/results/Labguru-v6.42.0/report-*.json</code></pre>
+  </section>
+
+  <!-- ── 10. Troubleshooting ── -->
+  <section id="troubleshooting">
+    <h2>10. Troubleshooting</h2>
+
+    <h3>Cannot find module '@playwright/test'</h3>
+    <pre><code>cd perf/playwright && npm install</code></pre>
+
+    <h3>Cannot find module 'cypress'</h3>
+    <pre><code>cd perf/cypress && npm install</code></pre>
+
+    <h3>net::ERR_SSL_PROTOCOL_ERROR in Playwright</h3>
+    <p>The <code>base_url</code> uses <code>https://</code> but the server has a self-signed certificate. <code>ignoreHTTPSErrors: true</code> is already set in <code>playwright.config.ts</code>. If still failing, check that the server is running and the URL is correct in <code>strester.json</code>.</p>
+
+    <h3>k6 TOKEN is not set / 401 Unauthorized</h3>
+    <pre><code><span class="kw">export</span> PERF_TOKEN_USER_A=your_token_here</code></pre>
+    <p>Or strester will prompt you to enter it interactively.</p>
+
+    <h3>Could not find a Cypress configuration file</h3>
+    <p>The Cypress runner must run from <code>perf/cypress/</code>. This is handled automatically by strester. If running Cypress manually, <code>cd perf/cypress</code> first.</p>
+
+    <h3>Results folder already has data from a previous run</h3>
+    <p>This is expected. All output files include timestamps so they never overwrite each other. Run <code>strester report</code> to get a combined view of all accumulated runs.</p>
+
+    <h3>strester report shows no_data for a tool</h3>
+    <p>The tool produced no result files this cycle. Either the test wasn't run, or it crashed before writing output. Check the <code>.log</code> file in the tool's results subfolder for details.</p>
+
+    <h3>Lighthouse [lhci-auth] Login error: No email input found</h3>
+    <p>The selector list in <code>puppeteer-login.js</code> didn't match any field on the login page. Inspect the email input's <code>name</code> or <code>id</code> attribute and add it to the <code>emailSelectors</code> array in <code>perf/lighthouse/puppeteer-login.js</code>.</p>
+
+    <h3>Lighthouse audit fails immediately after login</h3>
+    <p>This usually means the login succeeded but the session cookie wasn't carried over. Ensure <code>waitUntil: 'networkidle2'</code> is in the <code>waitForNavigation</code> call inside <code>puppeteer-login.js</code>. If the app uses SPA routing, try <code>waitUntil: 'load'</code> instead.</p>
+
+    <h3>k6 422 Unprocessable Entity on login POST</h3>
+    <p>The CSRF token extraction regex didn't match. Check the actual HTML source of <code>/auth/login</code> and adjust the regex in <code>pr13-login-to-tenants.js</code> if needed.</p>
+  </section>
+
+  <hr>
+  <p style="color:var(--muted);font-size:12px;text-align:center;">strester User Manual · Generated 30 May 2026</p>
+</main>
+
+<script>
+  // Simple scroll-spy
+  const sections = document.querySelectorAll('section[id], h3[id]');
+  const links = document.querySelectorAll('#sidebar nav a');
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const a = document.querySelector(`#sidebar nav a[href="#${e.target.id}"]`);
+        if (a) a.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-20% 0px -75% 0px' });
+  sections.forEach(s => obs.observe(s));
+</script>
+</body>
+</html>
